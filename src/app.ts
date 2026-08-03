@@ -1,0 +1,443 @@
+import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
+import * as path from "node:path";
+
+import { ConfigError, loadConfig } from "./config.js";
+import { connectClient, errorMessage, generateId, resolveTargetAsync, type TargetOptions } from "./connection.js";
+import { createOutputSink, type OutputSink, type OutputFormat, structuredError } from "./output.js";
+
+export interface CommandContext extends TargetOptions {
+  readonly format: OutputFormat;
+  readonly stream?: boolean;
+  readonly sink?: OutputSink;
+  readonly silent?: boolean;
+  readonly since?: string;
+}
+
+type Client = any;
+
+async function withClient(options: TargetOptions, use: (client: Client, target: Awaited<ReturnType<typeof resolveTargetAsync>>) => any): Promise<any> {
+  const target = await resolveTargetAsync(options);
+  return Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const client = yield* connectClient(target.socketUrl, target.token);
+    return yield* use(client, target);
+  })) as any) as Promise<any>;
+}
+
+function commandContext(options: CommandContext, stream = false): { sink: OutputSink; options: TargetOptions } {
+  return {
+    sink: options.sink ?? createOutputSink(options.format, { stream, stdoutIsTTY: process.stdout.isTTY }),
+    options,
+  };
+}
+
+function command(commandType: string, fields: Record<string, unknown>): Record<string, unknown> {
+  return { type: commandType, commandId: generateId("cmd"), ...fields };
+}
+
+function projectMatches(project: any, query: string): boolean {
+  const needle = query.trim().toLowerCase();
+  return [project.id, project.title, project.workspaceRoot, path.basename(project.workspaceRoot || "")]
+    .filter((value): value is string => typeof value === "string")
+    .some((value) => value.toLowerCase() === needle || value.toLowerCase().includes(needle));
+}
+
+async function loadShell(options: TargetOptions): Promise<{ projects: any[]; threads: any[] }> {
+  return withClient(options, (client) => Effect.gen(function* () {
+    let live: any;
+    const liveStream = client[ORCHESTRATION_WS_METHODS.subscribeShell]({});
+    yield* liveStream.pipe(Stream.runForEachWhile((item: any) => Effect.sync(() => {
+      if (item?.kind === "snapshot") live = item.snapshot;
+      return live === undefined;
+    })));
+    const archived = yield* client[ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]({});
+    const merge = (values: any[]) => {
+      const byId = new Map<string, any>();
+      for (const value of values) if (value?.id) byId.set(String(value.id), value);
+      return [...byId.values()];
+    };
+    return {
+      projects: merge([...(live?.projects ?? []), ...(archived?.projects ?? [])]),
+      threads: merge([...(live?.threads ?? []), ...(archived?.threads ?? [])]),
+    };
+  }));
+}
+
+async function loadThread(options: TargetOptions, threadId: string): Promise<any> {
+  return withClient(options, (client) => Effect.gen(function* () {
+    const stream = client[ORCHESTRATION_WS_METHODS.subscribeThread]({ threadId });
+    let thread: any;
+    yield* stream.pipe(Stream.runForEachWhile((item: any) => Effect.sync(() => {
+      if (item?.kind === "snapshot") thread = item.snapshot?.thread;
+      return thread === undefined;
+    })));
+    if (!thread) throw new ConfigError(`Thread "${threadId}" was not found.`, "thread_missing");
+    return thread;
+  }));
+}
+
+export async function listProjects(options: CommandContext): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const result = { projects: (await loadShell(options)).projects };
+  sink.write(result);
+  return result;
+}
+
+export async function addProject(options: CommandContext & { readonly workspaceRoot: string; readonly title?: string }): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const workspaceRoot = path.resolve(options.workspaceRoot);
+  const title = options.title?.trim() || path.basename(workspaceRoot) || "Untitled Project";
+  const projectId = generateId("proj");
+  await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.create", {
+      projectId,
+      title,
+      workspaceRoot,
+      createWorkspaceRootIfMissing: false,
+      defaultModelSelection: null,
+      createdAt: new Date().toISOString(),
+    }));
+  }));
+  const result = { id: projectId, projectId, title, workspaceRoot };
+  sink.write(result);
+  return result;
+}
+
+export async function cloneProject(options: CommandContext & {
+  readonly repositoryUrl: string;
+  readonly destination: string;
+  readonly title?: string;
+}): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const title = options.title?.trim() || path.basename(options.repositoryUrl, ".git") || "Cloned project";
+  const projectId = generateId("proj");
+  const cloned = await withClient(options, (client) => Effect.gen(function* () {
+    const result = yield* client[WS_METHODS.sourceControlCloneRepository]({
+      remoteUrl: options.repositoryUrl,
+      destinationPath: options.destination,
+    });
+    const workspaceRoot = result?.cwd || options.destination;
+    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.create", {
+      projectId,
+      title,
+      workspaceRoot,
+      createWorkspaceRootIfMissing: false,
+      defaultModelSelection: null,
+      createdAt: new Date().toISOString(),
+    }));
+    return { workspaceRoot };
+  }));
+  const output = { id: projectId, projectId, title, workspaceRoot: cloned.workspaceRoot, repositoryUrl: options.repositoryUrl };
+  sink.write(output);
+  return output;
+}
+
+export async function deleteProject(options: CommandContext & { readonly projectId: string; readonly force?: boolean }): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const shell = (await loadShell(options)).projects;
+  const project = shell.find((entry: any) => projectMatches(entry, options.projectId));
+  const projectId = project?.id || options.projectId;
+  await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.delete", { projectId, force: options.force }));
+  }));
+  const result = { projectId, deleted: true };
+  sink.write(result);
+  return result;
+}
+
+export async function updateProject(options: CommandContext & {
+  readonly projectId: string;
+  readonly title?: string;
+  readonly workspaceRoot?: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>;
+}): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const projects = (await loadShell(options)).projects;
+  const project = projects.find((entry: any) => projectMatches(entry, options.projectId));
+  const projectId = project?.id || options.projectId;
+  const fields: Record<string, unknown> = {};
+  if (options.title) fields.title = options.title;
+  if (options.workspaceRoot) fields.workspaceRoot = path.resolve(options.workspaceRoot);
+  if (options.provider || options.model || options.options?.length) fields.defaultModelSelection = resolveModel(options, project);
+  if (Object.keys(fields).length === 0) throw new ConfigError("project update requires a metadata option.", "cli_parse_failed");
+  await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.meta.update", { projectId, ...fields }));
+  }));
+  const result = { projectId, updated: true, fields };
+  sink.write(result);
+  return result;
+}
+
+export async function listModels(options: CommandContext & { readonly provider?: string }): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const config = await withClient(options, (client) => Effect.gen(function* () {
+    return yield* client[WS_METHODS.serverGetConfig]({});
+  }));
+  const providers = (config?.providers ?? []).filter((provider: any) => !options.provider || provider.instanceId === options.provider || provider.id === options.provider || provider.displayName === options.provider);
+  const result = { providers };
+  sink.write(result);
+  return result;
+}
+
+export async function listThreads(options: CommandContext & { readonly projectId?: string }): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const shell = await loadShell(options);
+  let threads = shell.threads;
+  if (options.projectId) {
+    const project = shell.projects.find((entry: any) => projectMatches(entry, options.projectId!));
+    const id = project?.id || options.projectId;
+    threads = threads.filter((thread: any) => thread.projectId === id);
+  }
+  const result = { threads };
+  sink.write(result);
+  return result;
+}
+
+interface ModelOptions {
+  readonly provider?: string;
+  readonly model?: string;
+  readonly runtimeMode?: string;
+  readonly interactionMode?: string;
+  readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>;
+}
+
+function resolveModel(options: ModelOptions, project?: any): { instanceId: string; model: string; options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }> } {
+  const configured = project?.defaultModelSelection ?? loadConfig().defaultModel;
+  return {
+    instanceId: options.provider || configured?.instanceId || "codex_personal",
+    model: options.model || configured?.model || "gpt-5.6-luna",
+    ...(options.options && options.options.length > 0 ? { options: options.options } : {}),
+  };
+}
+
+async function resolveProject(options: TargetOptions, query: string): Promise<any> {
+  const projects = (await loadShell(options)).projects;
+  const project = projects.find((entry: any) => projectMatches(entry, query));
+  if (!project) throw new ConfigError(`Project "${query}" was not found.`, "project_missing");
+  return project;
+}
+
+export async function createThread(options: CommandContext & {
+  readonly projectId: string;
+  readonly title: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly runtimeMode?: string;
+  readonly interactionMode?: string;
+  readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>;
+  readonly silent?: boolean;
+}): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const project = await resolveProject(options, options.projectId);
+  const modelSelection = resolveModel(options, project);
+  const threadId = generateId("thread");
+  await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("thread.create", {
+      threadId,
+      projectId: project.id,
+      title: options.title,
+      modelSelection,
+      runtimeMode: options.runtimeMode || "full-access",
+      interactionMode: options.interactionMode || "default",
+      branch: null,
+      worktreePath: null,
+      createdAt: new Date().toISOString(),
+    }));
+  }));
+  const result = { id: threadId, threadId, projectId: project.id, title: options.title, modelSelection };
+  if (!options.silent) sink.write(result);
+  return result;
+}
+
+async function startTurn(options: CommandContext & { readonly threadId: string; readonly message: string } & ModelOptions): Promise<unknown> {
+  const messageId = generateId("msg");
+  const requestedAt = new Date().toISOString();
+  const result = await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("thread.turn.start", {
+      threadId: options.threadId,
+      message: { messageId, role: "user", text: options.message, attachments: [] },
+      ...(options.provider || options.model || options.options?.length ? { modelSelection: resolveModel(options) } : {}),
+      runtimeMode: options.runtimeMode || "full-access",
+      interactionMode: options.interactionMode || "default",
+      createdAt: requestedAt,
+    }));
+    return { threadId: options.threadId, messageId, requestedAt, accepted: true };
+  }));
+  return result;
+}
+
+export async function sendMessage(options: CommandContext & { readonly threadId: string; readonly message: string; readonly wait?: boolean } & ModelOptions): Promise<unknown> {
+  const sink = options.sink ?? createOutputSink(options.wait ? "ndjson" : options.format, { stream: Boolean(options.wait), stdoutIsTTY: process.stdout.isTTY });
+  const result = await startTurn(options);
+  if (!options.wait) sink.write(result);
+  if (options.wait) {
+    const waited = await waitForThread({ ...options, sink, threadId: options.threadId, since: (result as any).requestedAt });
+    return { ...result as any, wait: waited };
+  }
+  return result;
+}
+
+export async function startThread(options: CommandContext & {
+  readonly projectId?: string;
+  readonly title?: string;
+  readonly threadId?: string;
+  readonly message: string;
+  readonly wait?: boolean;
+} & ModelOptions): Promise<unknown> {
+  let threadId = options.threadId;
+  let projectId = options.projectId;
+  let title = options.title;
+  if (!threadId) {
+    if (!projectId) throw new ConfigError("thread start requires --project unless --thread is supplied.", "project_missing");
+    const created = await createThread({ ...options, projectId, title: title || "CLI thread", silent: true });
+    threadId = String((created as any).threadId);
+  }
+  const sink = options.sink ?? createOutputSink(options.wait ? "ndjson" : options.format, { stream: Boolean(options.wait), stdoutIsTTY: process.stdout.isTTY });
+  const sent = await startTurn({ ...options, threadId, message: options.message });
+  const result = { threadId, ...(projectId ? { projectId } : {}), messageId: (sent as any).messageId, started: true };
+  if (!options.wait) sink.write(result);
+  if (options.wait) return { ...result, wait: await waitForThread({ ...options, sink, threadId, since: (sent as any).requestedAt }) };
+  return result;
+}
+
+export async function viewThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const thread = await loadThread(options, options.threadId);
+  const result = { threadId: options.threadId, thread };
+  sink.write(options.sink ? thread : result);
+  return result;
+}
+
+export async function transcript(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const thread = await loadThread(options, options.threadId);
+  const result = { threadId: options.threadId, messages: thread.messages ?? [], activities: thread.activities ?? [] };
+  sink.write(result);
+  return result;
+}
+
+export function normalizeThreadStreamItem(threadId: string, item: any): { type: string; threadId: string; [key: string]: unknown } {
+  if (item?.kind === "synchronized") return { type: "thread.synchronized", threadId };
+  if (item?.kind === "snapshot") return { type: "thread.snapshot", threadId, snapshotSequence: item.snapshot?.snapshotSequence, thread: item.snapshot?.thread };
+  if (item?.kind === "event") return { type: "thread.event", threadId, event: item.event };
+  return { type: "thread.malformed_event", threadId, raw: item };
+}
+
+export function terminalStateFrom(value: any): "completed" | "interrupted" | "failed" | "approval_required" | undefined {
+  const thread = value?.thread ?? value;
+  const latest = thread?.latestTurn;
+  if (latest?.state === "completed") return "completed";
+  if (latest?.state === "interrupted") return "interrupted";
+  if (latest?.state === "error") return "failed";
+  if (thread?.hasPendingApprovals || thread?.hasPendingUserInput) return "approval_required";
+  const activity = value?.event?.payload?.activity ?? value?.event?.activity;
+  const kind = activity?.kind;
+  if (kind === "approval.requested" || kind === "user-input.requested") return "approval_required";
+  if (kind === "turn.completed") return "completed";
+  if (kind === "turn.aborted" || kind === "turn.interrupted") return "interrupted";
+  if (kind === "turn.failed" || kind === "runtime.error") return "failed";
+  return undefined;
+}
+
+async function streamThread(options: CommandContext & { readonly threadId: string }, stopOnTerminal: boolean): Promise<{ status: string; threadId: string }> {
+  const sink = options.sink ?? createOutputSink(options.format, { stream: true, stdoutIsTTY: process.stdout.isTTY });
+  let status = "running";
+  await withClient(options, (client) => Effect.gen(function* () {
+    const stream = client[ORCHESTRATION_WS_METHODS.subscribeThread]({ threadId: options.threadId });
+    yield* stream.pipe(
+      Stream.runForEachWhile((item: any) => Effect.sync(() => {
+        const event = normalizeThreadStreamItem(options.threadId, item);
+        sink.event(event.type, event);
+        const snapshotIsBeforeRequestedTurn = item?.kind === "snapshot" && options.since && item.snapshot?.thread?.latestTurn?.requestedAt && item.snapshot.thread.latestTurn.requestedAt < options.since;
+        const next = snapshotIsBeforeRequestedTurn ? undefined : terminalStateFrom(item?.kind === "snapshot" ? item.snapshot : item?.kind === "event" ? { event: item.event } : item);
+        if (next) status = next;
+        return !(stopOnTerminal && Boolean(next));
+      })),
+      Effect.catch((error: unknown) => Effect.sync(() => {
+        sink.event("thread.malformed_event", { threadId: options.threadId, error: errorMessage(error) });
+        status = "failed";
+      })),
+    );
+  }));
+  return { status, threadId: options.threadId };
+}
+
+export async function watchThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
+  const result = await streamThread({ ...options, format: "ndjson" }, false);
+  return result;
+}
+
+export async function waitForThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
+  const result = await streamThread({ ...options, format: "ndjson" }, true);
+  const sink = options.sink ?? createOutputSink("ndjson", { stream: true, stdoutIsTTY: process.stdout.isTTY });
+  sink.event("thread.completed", result);
+  return result;
+}
+
+async function dispatchThreadCommand(options: CommandContext & { readonly threadId: string }, type: string, fields: Record<string, unknown> = {}, silent = false): Promise<unknown> {
+  const { sink } = commandContext(options);
+  await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command(type, { threadId: options.threadId, ...fields, ...(type !== "thread.unsettle" ? {} : { reason: "user" }) }));
+  }));
+  const result = { threadId: options.threadId, operation: type, accepted: true };
+  if (!silent) sink.write(result);
+  return result;
+}
+
+export async function archiveThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.archive"); }
+export async function unarchiveThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.unarchive"); }
+export async function deleteThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.delete"); }
+export async function settleThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.settle"); }
+export async function unsettleThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.unsettle"); }
+
+export async function updateThread(options: CommandContext & { readonly threadId: string; readonly title?: string; readonly provider?: string; readonly model?: string; readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>; readonly branch?: string; readonly worktreePath?: string; readonly runtimeMode?: string; readonly interactionMode?: string }): Promise<unknown> {
+  const fields: Record<string, unknown> = {};
+  if (options.title) fields.title = options.title;
+  if (options.provider || options.model || options.options?.length) fields.modelSelection = resolveModel(options);
+  if (options.branch !== undefined) fields.branch = options.branch || null;
+  if (options.worktreePath !== undefined) fields.worktreePath = options.worktreePath || null;
+  if (Object.keys(fields).length === 0 && !options.runtimeMode && !options.interactionMode) {
+    throw new ConfigError("thread update requires a metadata or mode option.", "cli_parse_failed");
+  }
+  if (Object.keys(fields).length > 0) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.meta.update", fields, true);
+  if (options.runtimeMode) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.runtime-mode.set", { runtimeMode: options.runtimeMode, createdAt: new Date().toISOString() }, true);
+  if (options.interactionMode) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.interaction-mode.set", { interactionMode: options.interactionMode, createdAt: new Date().toISOString() }, true);
+  const result = { threadId: options.threadId, updated: true, fields };
+  commandContext(options).sink.write(result);
+  return result;
+}
+
+export async function respondToApproval(options: CommandContext & { readonly threadId: string; readonly requestId: string; readonly decision: string }): Promise<unknown> {
+  return dispatchThreadCommand(options, "thread.approval.respond", { requestId: options.requestId, decision: options.decision, createdAt: new Date().toISOString() });
+}
+
+export async function respondToUserInput(options: CommandContext & { readonly threadId: string; readonly requestId: string; readonly answers: Record<string, unknown> }): Promise<unknown> {
+  return dispatchThreadCommand(options, "thread.user-input.respond", { requestId: options.requestId, answers: options.answers, createdAt: new Date().toISOString() });
+}
+
+export async function interruptThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
+  return dispatchThreadCommand(options, "thread.turn.interrupt", { createdAt: new Date().toISOString() });
+}
+
+export function toCommandError(error: unknown): { readonly exitCode: number; readonly output: ReturnType<typeof structuredError> } {
+  const message = errorMessage(error);
+  const code = error instanceof ConfigError
+    ? error.code
+    : message.startsWith("Invalid output format")
+      ? "cli_parse_failed"
+      : "command_failed";
+  const exitCode = code === "credential_missing" || code === "environment_missing" ? 3 : 1;
+  return { exitCode, output: structuredError(code, message) };
+}
+
+export function lifecycleExitCode(status: unknown): number {
+  switch (status) {
+    case "approval_required": return 10;
+    case "interrupted": return 130;
+    case "failed": return 1;
+    default: return 0;
+  }
+}

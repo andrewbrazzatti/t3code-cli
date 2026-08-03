@@ -1,0 +1,29 @@
+{
+  "name": "t3code-cli",
+  "version": "0.2.0",
+  "description": "Structured CLI client for T3 Code environments",
+  "type": "module",
+  "bin": {
+    "t3ctl": "./bin/t3ctl.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "pnpm build && node --test",
+    "start": "node ./bin/t3ctl.js"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.0-beta.102",
+    "@t3tools/client-runtime": "workspace:*",
+    "@t3tools/contracts": "workspace:*",
+    "@t3tools/shared": "workspace:*",
+    "effect": "4.0.0-beta.102",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.14",
+    "typescript": "^5.8.0"
+  }
+}
