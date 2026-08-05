@@ -1,6 +1,6 @@
 # T3 Code CLI
 
-`t3ctl` is a production-oriented command-line client for T3 Code environments. It supports interactive terminal use and automation through stable JSON and NDJSON output.
+`t3ctl` is a command-line client for T3 Code environments. It supports interactive terminal use and automation through stable JSON and NDJSON output.
 
 ## Install and configure
 
@@ -73,10 +73,6 @@ thread archive | unarchive | delete | update | interrupt | settle | unsettle | r
 ```
 
 Thread creation and updates support `--provider`, `--model`, `--runtime-mode`, `--interaction-mode`, and provider options such as `--option effort=max` or `--effort high`. Project and thread selectors accept IDs, titles, and workspace-root names where applicable.
-
-## Migration note
-
-This is a clean-break configuration model. The former plaintext `serverUrl`/`token` configuration is intentionally rejected and never silently migrated. Re-authenticate with `auth pair` or `auth local`; invalid configuration errors identify the remediation without printing the credential.
 
 ## Verification
 
