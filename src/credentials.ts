@@ -168,8 +168,8 @@ class NativeKeyringCredentialStore implements CredentialStore {
   }
 
   async set(id: string, secret: string): Promise<void> {
-      if (this.platform === "darwin") {
-      await runWithInput("security", ["add-generic-password", "-a", id, "-s", KEYRING_SERVICE, "-w", "-U"], secret);
+    if (this.platform === "darwin") {
+      await execFile("security", ["add-generic-password", "-a", id, "-s", KEYRING_SERVICE, "-w", secret, "-U"]);
       return;
     }
     await runWithInput("secret-tool", ["store", "--label", KEYRING_SERVICE, "service", KEYRING_SERVICE, "account", id], secret);

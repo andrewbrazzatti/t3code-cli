@@ -1,6 +1,7 @@
 import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import { ConfigError, loadConfig } from "./config.js";
@@ -252,13 +253,57 @@ export async function createThread(options: CommandContext & {
   return result;
 }
 
-async function startTurn(options: CommandContext & { readonly threadId: string; readonly message: string } & ModelOptions): Promise<unknown> {
+function getMimeType(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  switch (ext) {
+    case ".png": return "image/png";
+    case ".jpg":
+    case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    case ".svg": return "image/svg+xml";
+    case ".bmp": return "image/bmp";
+    default: return "image/png";
+  }
+}
+
+async function prepareImageAttachments(imagePaths?: ReadonlyArray<string>): Promise<Array<any>> {
+  if (!imagePaths || imagePaths.length === 0) return [];
+  const attachments: Array<any> = [];
+  for (const item of imagePaths) {
+    const fullPath = path.resolve(item);
+    try {
+      const stats = await fs.stat(fullPath);
+      if (!stats.isFile()) {
+        throw new ConfigError(`Image path "${item}" is not a file.`, "cli_parse_failed");
+      }
+      const buffer = await fs.readFile(fullPath);
+      const mimeType = getMimeType(fullPath);
+      const name = path.basename(fullPath);
+      const base64 = buffer.toString("base64");
+      attachments.push({
+        type: "image",
+        name,
+        mimeType,
+        sizeBytes: buffer.length,
+        dataUrl: `data:${mimeType};base64,${base64}`,
+      });
+    } catch (err: any) {
+      if (err instanceof ConfigError) throw err;
+      throw new ConfigError(`Failed to read image file "${item}": ${err.message}`, "cli_parse_failed");
+    }
+  }
+  return attachments;
+}
+
+async function startTurn(options: CommandContext & { readonly threadId: string; readonly message: string; readonly images?: ReadonlyArray<string> } & ModelOptions): Promise<unknown> {
   const messageId = generateId("msg");
   const requestedAt = new Date().toISOString();
+  const attachments = await prepareImageAttachments(options.images);
   const result = await withClient(options, (client) => Effect.gen(function* () {
     yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("thread.turn.start", {
       threadId: options.threadId,
-      message: { messageId, role: "user", text: options.message, attachments: [] },
+      message: { messageId, role: "user", text: options.message, attachments },
       ...(options.provider || options.model || options.options?.length ? { modelSelection: resolveModel(options) } : {}),
       runtimeMode: options.runtimeMode || "full-access",
       interactionMode: options.interactionMode || "default",
@@ -269,7 +314,7 @@ async function startTurn(options: CommandContext & { readonly threadId: string; 
   return result;
 }
 
-export async function sendMessage(options: CommandContext & { readonly threadId: string; readonly message: string; readonly wait?: boolean } & ModelOptions): Promise<unknown> {
+export async function sendMessage(options: CommandContext & { readonly threadId: string; readonly message: string; readonly images?: ReadonlyArray<string>; readonly wait?: boolean } & ModelOptions): Promise<unknown> {
   const sink = options.sink ?? createOutputSink(options.wait ? "ndjson" : options.format, { stream: Boolean(options.wait), stdoutIsTTY: process.stdout.isTTY });
   const result = await startTurn(options);
   if (!options.wait) sink.write(result);
@@ -285,6 +330,7 @@ export async function startThread(options: CommandContext & {
   readonly title?: string;
   readonly threadId?: string;
   readonly message: string;
+  readonly images?: ReadonlyArray<string>;
   readonly wait?: boolean;
 } & ModelOptions): Promise<unknown> {
   let threadId = options.threadId;
@@ -296,7 +342,7 @@ export async function startThread(options: CommandContext & {
     threadId = String((created as any).threadId);
   }
   const sink = options.sink ?? createOutputSink(options.wait ? "ndjson" : options.format, { stream: Boolean(options.wait), stdoutIsTTY: process.stdout.isTTY });
-  const sent = await startTurn({ ...options, threadId, message: options.message });
+  const sent = await startTurn({ ...options, threadId, message: options.message, images: options.images });
   const result = { threadId, ...(projectId ? { projectId } : {}), messageId: (sent as any).messageId, started: true };
   if (!options.wait) sink.write(result);
   if (options.wait) return { ...result, wait: await waitForThread({ ...options, sink, threadId, since: (sent as any).requestedAt }) };

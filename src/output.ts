@@ -81,14 +81,100 @@ function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : { value };
 }
 
-function humanize(value: unknown): string {
+function humanize(value: unknown, indent = 0): string {
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((entry) => humanize(entry)).join("\n");
-  if (typeof value === "object" && value !== null) {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([key, entry]) => `${key}: ${typeof entry === "object" ? JSON.stringify(entry) : String(entry)}`)
-      .join("\n");
+  if (typeof value === "number" || typeof value === "boolean" || value === null || value === undefined) {
+    return String(value);
   }
+
+  const pad = " ".repeat(indent);
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) return `${pad}(none)`;
+    return value.map((entry) => humanize(entry, indent)).join("\n");
+  }
+
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+
+    if ("projects" in obj && Array.isArray(obj.projects)) {
+      const projects = obj.projects as Array<Record<string, unknown>>;
+      if (projects.length === 0) return `${pad}No projects found.`;
+      return projects.map((p) => {
+        const title = p.title || p.name || p.id || "Untitled";
+        const idStr = p.id ? ` (${p.id})` : "";
+        const lines = [`${pad}• ${title}${idStr}`];
+        if (p.workspaceRoot) lines.push(`${pad}  Workspace: ${p.workspaceRoot}`);
+        const repoObj = p.repositoryIdentity as Record<string, unknown> | null;
+        if (repoObj?.canonicalKey) lines.push(`${pad}  Repo: ${repoObj.canonicalKey}`);
+        const modelObj = p.defaultModelSelection as Record<string, unknown> | null;
+        if (modelObj?.model) {
+          lines.push(`${pad}  Model: ${modelObj.instanceId ? `${modelObj.instanceId} / ` : ""}${modelObj.model}`);
+        }
+        return lines.join("\n");
+      }).join("\n\n");
+    }
+
+    if ("threads" in obj && Array.isArray(obj.threads)) {
+      const threads = obj.threads as Array<Record<string, unknown>>;
+      if (threads.length === 0) return `${pad}No threads found.`;
+      return threads.map((t) => {
+        const title = t.title || t.id || "Untitled Thread";
+        const idStr = t.id ? ` (${t.id})` : "";
+        const lines = [`${pad}• ${title}${idStr}`];
+        if (t.projectId) lines.push(`${pad}  Project: ${t.projectId}`);
+        if (t.status) lines.push(`${pad}  Status: ${t.status}`);
+        if (t.runtimeMode) lines.push(`${pad}  Runtime: ${t.runtimeMode}`);
+        if (t.interactionMode) lines.push(`${pad}  Interaction: ${t.interactionMode}`);
+        return lines.join("\n");
+      }).join("\n\n");
+    }
+
+    if ("providers" in obj && Array.isArray(obj.providers)) {
+      const providers = obj.providers as Array<Record<string, unknown>>;
+      if (providers.length === 0) return `${pad}No providers found.`;
+      return providers.map((prov) => {
+        const pName = prov.displayName || prov.name || prov.instanceId || prov.id || "Provider";
+        const models = Array.isArray(prov.models) ? (prov.models as Array<Record<string, unknown>>) : [];
+        const modelLines = models.map((m) => {
+          const mName = m.displayName || m.name || m.id || "Model";
+          const mId = m.id && m.id !== mName ? ` (${m.id})` : "";
+          return `${pad}  - ${mName}${mId}`;
+        }).join("\n");
+        return `${pad}• ${pName}:\n${modelLines || `${pad}  (no models available)`}`;
+      }).join("\n\n");
+    }
+
+    if ("environments" in obj && Array.isArray(obj.environments)) {
+      const envs = obj.environments as Array<Record<string, unknown>>;
+      const active = obj.activeEnvironment ? ` (active: ${obj.activeEnvironment})` : "";
+      const header = `${pad}ENVIRONMENTS${active}`;
+      if (envs.length === 0) return `${header}\n${pad}  No environments configured.`;
+      const envLines = envs.map((e) => {
+        const name = e.name || "unnamed";
+        const url = e.serverUrl || "";
+        const isActive = e.active ? " [active]" : "";
+        const cred = e.credential ? ` [credential: ${e.credential}]` : "";
+        return `${pad}  ${isActive ? "*" : " "} ${name}${isActive} - ${url}${cred}`;
+      }).join("\n");
+      return `${header}\n${envLines}`;
+    }
+
+    const entries = Object.entries(obj);
+    if (entries.length === 0) return `${pad}{}`;
+    return entries.map(([key, val]) => {
+      if (typeof val === "object" && val !== null) {
+        if (Array.isArray(val)) {
+          if (val.length === 0) return `${pad}${key}: (empty)`;
+          const arrayStr = val.map((v) => typeof v === "object" ? humanize(v, indent + 2) : `${pad}  ${String(v)}`).join("\n");
+          return `${pad}${key}:\n${arrayStr}`;
+        }
+        return `${pad}${key}:\n${humanize(val, indent + 2)}`;
+      }
+      return `${pad}${key}: ${String(val)}`;
+    }).join("\n");
+  }
+
   return String(value);
 }
 

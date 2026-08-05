@@ -12,3 +12,33 @@ test("target resolution normalizes HTTP/WS URLs and keeps secrets out of config"
   assert.equal(target.socketUrl, "wss://example.test/ws?token=access-token");
   assert.equal(target.token, "access-token");
 });
+
+test("errorMessage extracts nested WebSocket and RPC error causes", async () => {
+  const { errorMessage } = await import("../dist/connection.js");
+  const rpc401Error = {
+    _tag: "RpcClientError",
+    reason: {
+      _tag: "SocketOpenError",
+      kind: "Unknown",
+      cause: { message: "Unexpected server response: 401" },
+    },
+  };
+  assert.equal(
+    errorMessage(rpc401Error),
+    'WebSocket connection failed: 401 Unauthorized. Run "t3ctl auth pair" or "t3ctl auth local" to re-authenticate.',
+  );
+
+  const econnrefusedError = {
+    _tag: "RpcClientError",
+    reason: {
+      _tag: "SocketOpenError",
+      kind: "Unknown",
+      cause: { message: "connect ECONNREFUSED 127.0.0.1:3000" },
+    },
+  };
+  assert.equal(
+    errorMessage(econnrefusedError),
+    "SocketOpenError: connect ECONNREFUSED 127.0.0.1:3000",
+  );
+});
+

@@ -150,10 +150,50 @@ export function errorMessage(error: unknown): string {
   const sanitize = (value: string) => value
     .replace(/([?&]token=)[^&\s]+/gi, "$1[redacted]")
     .replace(/(Bearer\s+|DPoP\s+)[^\s]+/gi, "$1[redacted]");
-  if (error instanceof Error) return sanitize(error.message);
-  if (typeof error === "string") return sanitize(error);
-  const candidate = error as { message?: unknown; issue?: { message?: unknown } } | null;
-  if (typeof candidate?.message === "string") return sanitize(candidate.message);
-  if (typeof candidate?.issue?.message === "string") return sanitize(candidate.issue.message);
-  return "The T3 Code server returned an unknown error.";
+
+  const candidate = error as {
+    message?: unknown;
+    issue?: { message?: unknown };
+    reason?: { cause?: { message?: unknown; error?: { message?: unknown } } | unknown; message?: unknown };
+    cause?: { message?: unknown; error?: { message?: unknown } } | unknown;
+  } | null;
+
+  const extractCauseMessage = (): string | undefined => {
+    const rawCause = candidate?.reason && typeof candidate.reason === "object" && "cause" in candidate.reason
+      ? candidate.reason.cause
+      : candidate?.cause;
+    if (!rawCause || typeof rawCause !== "object") return undefined;
+    const causeObj = rawCause as { message?: unknown; error?: { message?: unknown } };
+    if (typeof causeObj.error?.message === "string" && causeObj.error.message.trim()) {
+      return causeObj.error.message.trim();
+    }
+    if (typeof causeObj.message === "string" && causeObj.message.trim()) {
+      return causeObj.message.trim();
+    }
+    return undefined;
+  };
+
+  const causeMsg = extractCauseMessage();
+  let baseMessage: string;
+
+  if (causeMsg && causeMsg !== "An error occurred during Open" && !causeMsg.startsWith("SocketOpenError")) {
+    if (causeMsg.includes("401")) {
+      baseMessage = `WebSocket connection failed: 401 Unauthorized. Run "t3ctl auth pair" or "t3ctl auth local" to re-authenticate.`;
+    } else {
+      baseMessage = `SocketOpenError: ${causeMsg}`;
+    }
+  } else if (error instanceof Error) {
+    baseMessage = error.message;
+  } else if (typeof error === "string") {
+    baseMessage = error;
+  } else if (typeof candidate?.message === "string") {
+    baseMessage = candidate.message;
+  } else if (typeof candidate?.issue?.message === "string") {
+    baseMessage = candidate.issue.message;
+  } else {
+    baseMessage = "The T3 Code server returned an unknown error.";
+  }
+
+  return sanitize(baseMessage);
 }
+

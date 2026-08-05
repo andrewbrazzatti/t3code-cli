@@ -39,6 +39,7 @@ interface ParsedArgs {
   readonly command: string[];
   readonly flags: Map<string, string | boolean>;
   readonly positionals: string[];
+  readonly rawArgv: readonly string[];
 }
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -83,7 +84,30 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     positionals.unshift(command[1]);
     command.pop();
   }
-  return { command, flags, positionals };
+  return { command, flags, positionals, rawArgv: argv };
+}
+
+function imageFlags(args: ParsedArgs): string[] {
+  const paths: string[] = [];
+  for (let i = 0; i < args.rawArgv.length; i++) {
+    const token = args.rawArgv[i];
+    if (token === "--image" || token.startsWith("--image=")) {
+      let val = "";
+      if (token.startsWith("--image=")) {
+        val = token.slice("--image=".length);
+      } else if (i + 1 < args.rawArgv.length && !args.rawArgv[i + 1].startsWith("-")) {
+        val = args.rawArgv[i + 1];
+        i++;
+      }
+      if (val) {
+        for (const item of val.split(",")) {
+          const trimmed = item.trim();
+          if (trimmed && !paths.includes(trimmed)) paths.push(trimmed);
+        }
+      }
+    }
+  }
+  return paths;
 }
 
 function flag(args: ParsedArgs, name: string): string | undefined {
@@ -105,11 +129,11 @@ function modelOptions(args: ParsedArgs): ReadonlyArray<{ readonly id: string; re
       const id = entry.slice(0, separator).trim();
       const value = entry.slice(separator + 1).trim();
       if (!id || !value) throw new ConfigError(`Invalid model option "${entry}"; expected id=value.`, "cli_parse_failed");
-      values.push({ id, value: value === "true" ? true : value === "false" ? false : value });
+      values.push({ id: id === "effort" ? "reasoningEffort" : id, value: value === "true" ? true : value === "false" ? false : value });
     }
   }
   const effort = flag(args, "effort");
-  if (effort) values.push({ id: "effort", value: effort });
+  if (effort) values.push({ id: "reasoningEffort", value: effort });
   if (args.flags.has("fast-mode")) values.push({ id: "fastMode", value: boolFlag(args, "fast-mode") });
   return values.length > 0 ? values : undefined;
 }
@@ -148,7 +172,7 @@ function commonContext(args: ParsedArgs, format: OutputFormat, stream = false) {
 }
 
 function help(): string {
-  return `T3 Code CLI\n\nUsage: t3ctl [global options] <command>\n\nGlobal options:\n  --format auto|human|json|ndjson  Output format (auto selects human for a TTY, JSON otherwise)\n  --env NAME                       Select a named environment\n  --server-url URL                 Override the environment URL\n\nAuthentication:\n  auth pair <pairing-url> [--name NAME] [--token TOKEN]\n  auth local --server-url URL [--token BOOTSTRAP] [--access-token TOKEN]\n  auth status [--env NAME]\n\nProjects and models:\n  project list|add|clone|update|delete\n  models [--provider NAME]\n\nThreads:\n  thread create|start|send|wait|watch|view|transcript|list\n  thread archive|unarchive|delete|update|interrupt|settle|unsettle|respond|respond-input\n\nAutomation:\n  Prompts may be positional, passed with --message/--prompt, or read from stdin.\n  --wait on start/send emits NDJSON lifecycle events and waits for completion.`;
+  return `T3 Code CLI\n\nUsage: t3ctl [global options] <command>\n\nGlobal options:\n  --format auto|human|json|ndjson  Output format (auto selects human for a TTY, JSON otherwise)\n  --env NAME                       Select a named environment\n  --server-url URL                 Override the environment URL\n\nAuthentication:\n  auth pair <pairing-url> [--name NAME] [--token TOKEN]\n  auth local --server-url URL [--token BOOTSTRAP] [--access-token TOKEN]\n  auth status [--env NAME]\n\nProjects and models:\n  project list|add|clone|update|delete\n  models [--provider NAME]\n\nThreads:\n  thread create|start|send|wait|watch|view|transcript|list\n  thread archive|unarchive|delete|update|interrupt|settle|unsettle|respond|respond-input\n\nAutomation:\n  Prompts may be positional, passed with --message/--prompt, or read from stdin.\n  --image <path> attaches an image file to thread start / thread send.\n  --wait on start/send emits NDJSON lifecycle events and waits for completion.`;
 }
 
 async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<number> {
@@ -249,13 +273,15 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       const startThreadId = flag(args, "thread") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID || positionalThreadId;
       const message = await readMessage(args, startThreadId ? 1 : 0);
       const wait = boolFlag(args, "wait");
-      const result = await startThread({ ...context, threadId: startThreadId, projectId: projectSelection, title: flag(args, "title"), message, wait, provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
+      const images = imageFlags(args);
+      const result = await startThread({ ...context, threadId: startThreadId, projectId: projectSelection, title: flag(args, "title"), message, images, wait, provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
       return lifecycleExitCode((result as any)?.wait?.status);
     }
     if (subcommand === "send") {
       if (!threadId) throw new ConfigError("thread send requires a thread ID.", "thread_missing");
       const message = await readMessage(args, 1);
-      const result = await sendMessage({ ...context, threadId, message, wait: boolFlag(args, "wait"), provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
+      const images = imageFlags(args);
+      const result = await sendMessage({ ...context, threadId, message, images, wait: boolFlag(args, "wait"), provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
       return lifecycleExitCode((result as any)?.wait?.status);
     }
     if (["wait", "watch"].includes(subcommand || "")) {
