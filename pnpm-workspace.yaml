@@ -3,6 +3,18 @@ packages:
   - 'vendor/t3code/packages/*'
   - 'vendor/t3code/apps/*'
 
+allowBuilds:
+  browser-tabs-lock: true
+  bufferutil: true
+  core-js: true
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+  msgpackr-extract: true
+  msw: true
+  node-pty: true
+  utf-8-validate: true
+
 catalog:
   "@clerk/backend": 3.13.0
   "@clerk/clerk-js": 6.25.7
