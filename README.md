@@ -5,8 +5,9 @@
 ## Install and configure
 
 ```sh
-git clone --recursive git@github.com:andrewbrazzatti/t3code-cli.git
-# or if already cloned: git submodule update --init --recursive
+git clone git@github.com:andrewbrazzatti/t3code-cli.git
+cd t3code-cli
+git submodule update --init
 
 pnpm install
 pnpm build
