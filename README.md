@@ -5,6 +5,9 @@
 ## Install and configure
 
 ```sh
+git clone --recursive git@github.com:andrewbrazzatti/t3code-cli.git
+# or if already cloned: git submodule update --init --recursive
+
 pnpm install
 pnpm build
 node bin/t3ctl.js --help

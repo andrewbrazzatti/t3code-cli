@@ -1,7 +1,7 @@
 packages:
   - '.'
-  - '../t3code/packages/*'
-  - '../t3code/apps/*'
+  - 'vendor/t3code/packages/*'
+  - 'vendor/t3code/apps/*'
 
 catalog:
   "@clerk/backend": 3.13.0
