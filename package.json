@@ -25,5 +25,19 @@
     "@types/node": "^24.0.0",
     "@types/ws": "^8.5.14",
     "typescript": "^5.8.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "browser-tabs-lock",
+      "bufferutil",
+      "core-js",
+      "electron",
+      "electron-winstaller",
+      "esbuild",
+      "msgpackr-extract",
+      "msw",
+      "node-pty",
+      "utf-8-validate"
+    ]
   }
 }
