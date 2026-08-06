@@ -172,11 +172,34 @@ export async function updateProject(options: CommandContext & {
   return result;
 }
 
+/**
+ * The server config response is decoded against the contracts schema, which
+ * pins closed enums for parts of the desktop app's settings (keybinding
+ * commands, for one) that this CLI never reads. When the app is newer than the
+ * CLI, decoding fails and the raw Effect message is an unreadable wall of enum
+ * members with no hint of what to do. Detect that shape and say what it means.
+ */
+export function describeSchemaMismatch(error: unknown): ConfigError | undefined {
+  const message = errorMessage(error);
+  const looksLikeDecodeFailure = /\bExpected\b[\s\S]*\bgot\b/.test(message) && /\bat \[/.test(message);
+  if (!looksLikeDecodeFailure) return undefined;
+  const unexpected = /got "([^"]+)"/.exec(message)?.[1];
+  const field = /at (\[[^\n]*\])/.exec(message)?.[1];
+  return new ConfigError(
+    `This t3ctl is older than the T3 Code server it is talking to, so it cannot decode the server config` +
+      `${unexpected ? ` (unrecognised value "${unexpected}"` : ""}${unexpected && field ? ` at ${field}` : ""}${unexpected ? ")" : ""}.\n\n` +
+      `Update t3ctl to match the server, or read the provider and model IDs from ~/.t3/userdata/settings.json in the meantime.`,
+    "version_mismatch",
+  );
+}
+
 export async function listModels(options: CommandContext & { readonly provider?: string }): Promise<unknown> {
   const { sink } = commandContext(options);
   const config = await withClient(options, (client) => Effect.gen(function* () {
     return yield* client[WS_METHODS.serverGetConfig]({});
-  }));
+  })).catch((error: unknown) => {
+    throw describeSchemaMismatch(error) ?? error;
+  });
   const providers = (config?.providers ?? []).filter((provider: any) => !options.provider || provider.instanceId === options.provider || provider.id === options.provider || provider.displayName === options.provider);
   const result = { providers };
   sink.write(result);

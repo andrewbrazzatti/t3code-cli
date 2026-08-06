@@ -13,20 +13,41 @@ Use `t3ctl` to operate servers, manage projects, run threads, and automate tasks
 
 ## Installation and Setup
 
-1. Build the executable:
+`bin/t3ctl.js` loads from `dist/`, so the build is a prerequisite, not an
+alternative. Running it from a fresh checkout without building fails with
+`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`.
+
+1. Install dependencies and build:
 ```sh
+pnpm install
 pnpm build
 ```
 
-2. Run the CLI directly:
+2. Run the CLI:
 ```sh
 node bin/t3ctl.js --help
 ```
 
-3. Alternatively, run the linked binary:
+3. Or, once linked, run the binary directly:
 ```sh
 t3ctl --help
 ```
+
+---
+
+## Discovering Commands and Flags
+
+`--help` is scoped to the command it follows. Use it rather than guessing flag
+names — unknown flags are rejected, and the error lists what the command
+accepts.
+
+```sh
+t3ctl --help                  # command index
+t3ctl thread start --help     # flags for thread start
+```
+
+Model selection is `--provider <instanceId> --model <model>`, e.g.
+`--provider opencode --model opencode-go/deepseek-v4-flash`.
 
 ---
 

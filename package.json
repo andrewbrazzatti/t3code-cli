@@ -10,7 +10,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "pnpm build && node --test",
+    "test": "pnpm build && node --test test/*.test.js",
     "start": "node ./bin/t3ctl.js"
   },
   "dependencies": {

@@ -32,6 +32,13 @@ import {
   watchThread,
   toCommandError,
 } from "./app.js";
+import {
+  commandHelp,
+  knownFlagsFor,
+  ROOTS_WITH_SUBCOMMANDS,
+  specFor,
+  topLevelHelp,
+} from "./commands.js";
 import { ConfigError } from "./config.js";
 import { outputFormatFromArgv, createOutputSink, type OutputFormat } from "./output.js";
 
@@ -79,8 +86,7 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
     if (command.length < 2 && !endFlags) command.push(token);
     else positionals.push(token);
   }
-  const rootsWithSubcommands = new Set(["auth", "env", "project", "thread"]);
-  if (command.length === 2 && !rootsWithSubcommands.has(command[0])) {
+  if (command.length === 2 && !ROOTS_WITH_SUBCOMMANDS.has(command[0])) {
     positionals.unshift(command[1]);
     command.pop();
   }
@@ -171,8 +177,25 @@ function commonContext(args: ParsedArgs, format: OutputFormat, stream = false) {
   };
 }
 
-function help(): string {
-  return `T3 Code CLI\n\nUsage: t3ctl [global options] <command>\n\nGlobal options:\n  --format auto|human|json|ndjson  Output format (auto selects human for a TTY, JSON otherwise)\n  --env NAME                       Select a named environment\n  --server-url URL                 Override the environment URL\n\nAuthentication:\n  auth pair <pairing-url> [--name NAME] [--token TOKEN]\n  auth local --server-url URL [--token BOOTSTRAP] [--access-token TOKEN]\n  auth status [--env NAME]\n\nProjects and models:\n  project list|add|clone|update|delete\n  models [--provider NAME]\n\nThreads:\n  thread create|start|send|wait|watch|view|transcript|list\n  thread archive|unarchive|delete|update|interrupt|settle|unsettle|respond|respond-input\n\nAutomation:\n  Prompts may be positional, passed with --message/--prompt, or read from stdin.\n  --image <path> attaches an image file to thread start / thread send.\n  --wait on start/send emits NDJSON lifecycle events and waits for completion.`;
+/**
+ * Reject flags the resolved command does not accept.
+ *
+ * Unknown flags used to be collected and ignored, so a typo (or a plausible
+ * guess like `--instance` instead of `--provider`) silently did nothing while
+ * the command reported success.
+ */
+export function assertKnownFlags(command: readonly string[], flags: Iterable<string>): void {
+  const known = knownFlagsFor(command);
+  if (!known) return; // Unknown command; the dispatcher reports that with better context.
+  const unknown = [...flags].filter((name) => !known.has(name));
+  if (unknown.length === 0) return;
+  const label = command.join(" ");
+  const accepted = [...known].sort().map((name) => `--${name}`).join(", ");
+  throw new ConfigError(
+    `Unknown ${unknown.length > 1 ? "flags" : "flag"} ${unknown.map((name) => `"--${name}"`).join(", ")} for "t3ctl ${label}".\n\n` +
+      `Accepted: ${accepted}\n\nRun "t3ctl ${label} --help" for details.`,
+    "cli_parse_failed",
+  );
 }
 
 async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<number> {
@@ -187,10 +210,15 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
     process.stdout.write("0.2.0\n");
     return 0;
   }
+  // Help resolves against the specific command when there is one, so
+  // `t3ctl thread start --help` documents thread start rather than everything.
   if (!root || boolFlag(args, "help")) {
-    process.stdout.write(`${help()}\n`);
+    const resolved = root ? [root, subcommand].filter(Boolean) as string[] : [];
+    const text = resolved.length > 0 && specFor(resolved) ? commandHelp(resolved) : topLevelHelp();
+    process.stdout.write(`${text}\n`);
     return 0;
   }
+  assertKnownFlags([root, subcommand].filter(Boolean) as string[], args.flags.keys());
 
   if (root === "auth") {
     if (subcommand === "pair") {
@@ -332,7 +360,7 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
     createOutputSink(format).write(result);
     return 0;
   }
-  throw new ConfigError(`Unknown command "${root}".\n\n${help()}`, "cli_parse_failed");
+  throw new ConfigError(`Unknown command "${root}".\n\n${topLevelHelp()}`, "cli_parse_failed");
 }
 
 export async function runCli(argv: readonly string[] = process.argv): Promise<void> {
