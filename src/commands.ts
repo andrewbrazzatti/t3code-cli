@@ -84,6 +84,12 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     ],
   },
   "auth status": { summary: "Show authentication status and configured environments", flags: [] },
+  "auth pairing-token": {
+    summary: "Issue a pairing token for another client to connect to this server",
+    flags: [
+      { name: "label", arg: "LABEL", description: "Optional label describing the client being paired" },
+    ],
+  },
   "auth use": {
     usage: "<name>",
     summary: "Set the active environment",
@@ -112,6 +118,33 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     flags: [{ name: "provider", arg: "NAME", description: "Filter to one provider instance" }],
   },
   status: { summary: "Alias of `models`", flags: [] },
+
+  "provider credentials get": {
+    usage: "[provider] [name]",
+    summary: "Get configured provider credentials and environment variables",
+    flags: [
+      { name: "provider", arg: "ID", description: "Provider instance ID or driver name" },
+      { name: "instance", arg: "ID", description: "Alias of --provider", hidden: true },
+      { name: "instance-id", arg: "ID", description: "Alias of --provider", hidden: true },
+      { name: "name", arg: "NAME", description: "Credential or environment variable name" },
+      { name: "key", arg: "NAME", description: "Alias of --name", hidden: true },
+    ],
+  },
+  "provider credentials set": {
+    usage: "[provider] <name> <value>",
+    summary: "Set a provider credential or environment variable on the server",
+    flags: [
+      { name: "provider", arg: "ID", description: "Provider instance ID or driver name" },
+      { name: "instance", arg: "ID", description: "Alias of --provider", hidden: true },
+      { name: "instance-id", arg: "ID", description: "Alias of --provider", hidden: true },
+      { name: "name", arg: "NAME", description: "Credential or environment variable name" },
+      { name: "key", arg: "NAME", description: "Alias of --name", hidden: true },
+      { name: "value", arg: "VALUE", description: "Credential value" },
+      { name: "val", arg: "VALUE", description: "Alias of --value", hidden: true },
+      { name: "sensitive", description: "Mark credential as sensitive (default: true)" },
+      { name: "non-sensitive", description: "Mark credential as non-sensitive" },
+    ],
+  },
 
   "project list": { summary: "List projects", flags: [] },
   "project add": {
@@ -229,7 +262,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     ],
   },
 
-  connect: {
+  "connect": {
     usage: "<pairing-url>",
     summary: "Alias of `auth pair`, kept as a migration path",
     flags: [
@@ -239,15 +272,34 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
 };
 
+/** Set of flag names that take no value argument (boolean flags). */
+export const BOOLEAN_FLAGS: ReadonlySet<string> = new Set(
+  [
+    ...GLOBAL_FLAGS,
+    ...MODEL_FLAGS,
+    ...MODE_FLAGS,
+    ...THREAD_ID_FLAGS,
+    ...MESSAGE_FLAGS,
+    ...Object.values(COMMANDS).flatMap((c) => c.flags),
+  ]
+    .filter((f) => !f.arg)
+    .map((f) => f.name)
+);
+
 /** Subcommand spellings that resolve to another spec. */
 const ALIASES: Readonly<Record<string, string>> = {
   "project rename": "project update",
   "project remove": "project delete",
   "thread input": "thread respond-input",
+  "provider get": "provider credentials get",
+  "provider set": "provider credentials set",
+  "provider list": "models",
+  "models credentials get": "provider credentials get",
+  "models credentials set": "provider credentials set",
 };
 
 /** Roots whose second token is a subcommand rather than a positional. */
-export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread"]);
+export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider"]);
 
 export function commandKey(command: readonly string[]): string {
   const raw = command.join(" ");
@@ -311,6 +363,7 @@ Authentication:
   auth pair <pairing-url> [--name NAME] [--token TOKEN]
   auth local --server-url URL [--token BOOTSTRAP] [--access-token TOKEN]
   auth status
+  auth pairing-token [--label LABEL]
   auth use|remove <name>
 
 Environments:
@@ -319,6 +372,10 @@ Environments:
 Projects and models:
   project list|add|clone|update|delete
   models [--provider NAME]
+
+Provider credentials:
+  provider credentials get [provider] [name]
+  provider credentials set [provider] <name> <value> [--sensitive|--non-sensitive]
 
 Threads:
   thread create|start|send|wait|watch|view|transcript|list

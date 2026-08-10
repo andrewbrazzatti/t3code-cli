@@ -69,6 +69,13 @@ test("help is scoped to the resolved command", async () => {
   assert.match(topLevelHelp(), /env list\|use\|remove/);
 });
 
+test("CLI accepts provider credentials flags and aliases", async () => {
+  const { assertKnownFlags } = await import("../dist/index.js");
+  assert.doesNotThrow(() => assertKnownFlags(["provider", "credentials"], ["provider", "name", "value", "sensitive", "non-sensitive"]));
+  assert.doesNotThrow(() => assertKnownFlags(["provider", "get"], ["instance", "key"]));
+  assert.doesNotThrow(() => assertKnownFlags(["provider", "set"], ["instance-id", "key", "val"]));
+});
+
 test("a server/CLI schema mismatch is reported as a version problem", async () => {
   const { describeSchemaMismatch } = await import("../dist/app.js");
   const raw = new Error(
@@ -82,3 +89,17 @@ test("a server/CLI schema mismatch is reported as a version problem", async () =
   // Unrelated failures must pass through untouched.
   assert.equal(describeSchemaMismatch(new Error("WebSocket connection failed: 401 Unauthorized")), undefined);
 });
+
+test("CLI parses --fast-mode as boolean without consuming positionals", async () => {
+  const { parseArgs } = await import("../dist/index.js");
+  const parsed = parseArgs(["thread", "update", "--fast-mode", "thread-123"]);
+  assert.equal(parsed.command[0], "thread");
+  assert.equal(parsed.command[1], "update");
+  assert.equal(parsed.flags.get("fast-mode"), true);
+  assert.equal(parsed.positionals[0], "thread-123");
+
+  const startParsed = parseArgs(["thread", "start", "--project", "proj-1", "--fast-mode", "my prompt"]);
+  assert.equal(startParsed.flags.get("fast-mode"), true);
+  assert.equal(startParsed.positionals[0], "my prompt");
+});
+

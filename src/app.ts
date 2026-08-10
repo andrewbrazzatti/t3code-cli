@@ -206,6 +206,237 @@ export async function listModels(options: CommandContext & { readonly provider?:
   return result;
 }
 
+export interface ProviderCredentialsGetOptions extends CommandContext {
+  readonly provider?: string;
+  readonly name?: string;
+  readonly positionals?: readonly string[];
+}
+
+export interface ProviderCredentialSetOptions extends CommandContext {
+  readonly provider?: string;
+  readonly name?: string;
+  readonly value?: string;
+  readonly sensitive?: boolean;
+  readonly positionals?: readonly string[];
+}
+
+export async function getProviderCredentials(options: ProviderCredentialsGetOptions): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const pos = (options.positionals ?? []).filter((p) => p !== "get" && p !== "credentials" && p !== "credential");
+  let provider = options.provider;
+  let name = options.name;
+
+  if (!provider && !name) {
+    if (pos.length >= 2) {
+      provider = pos[0];
+      name = pos[1];
+    } else if (pos.length === 1) {
+      const candidate = pos[0];
+      if (/^[A-Z0-9_]+$/.test(candidate) || candidate.includes("_KEY") || candidate.includes("_TOKEN") || candidate.includes("_SECRET") || candidate.includes("_PASSWORD")) {
+        name = candidate;
+      } else {
+        provider = candidate;
+      }
+    }
+  } else if (!name && pos.length >= 1) {
+    name = pos[0];
+  } else if (!provider && pos.length >= 1) {
+    provider = pos[0];
+  }
+
+  const { settings, config } = await withClient(options, (client) => Effect.gen(function* () {
+    const settings = yield* client[WS_METHODS.serverGetSettings]({});
+    const config = yield* client[WS_METHODS.serverGetConfig]({});
+    return { settings, config };
+  })).catch((error: unknown) => {
+    throw describeSchemaMismatch(error) ?? error;
+  });
+
+  const providerInstances = settings?.providerInstances ?? {};
+
+  if (provider) {
+    const needle = provider.toLowerCase();
+    const matchedKey = Object.keys(providerInstances).find(
+      (key) => key.toLowerCase() === needle || providerInstances[key]?.driver?.toLowerCase() === needle
+    );
+    const instance = matchedKey ? providerInstances[matchedKey] : undefined;
+    const configProvider = (config?.providers ?? []).find(
+      (p: any) => p.instanceId?.toLowerCase() === needle || p.driver?.toLowerCase() === needle || p.id?.toLowerCase() === needle
+    );
+
+    const targetId = matchedKey || configProvider?.instanceId || provider;
+    const envVars = instance?.environment ?? [];
+
+    if (name) {
+      const targetName = name.trim();
+      const match = envVars.find((e: any) => e.name.toLowerCase() === targetName.toLowerCase());
+      const result = {
+        provider: targetId,
+        driver: instance?.driver || configProvider?.driver || targetId,
+        name: targetName,
+        found: Boolean(match),
+        ...(match ? {
+          value: match.valueRedacted ? "[redacted]" : match.value,
+          sensitive: Boolean(match.sensitive),
+          valueRedacted: Boolean(match.valueRedacted),
+        } : {}),
+      };
+      sink.write(result);
+      return result;
+    }
+
+    const result = {
+      provider: targetId,
+      driver: instance?.driver || configProvider?.driver || targetId,
+      displayName: instance?.displayName || configProvider?.displayName,
+      environment: envVars.map((e: any) => ({
+        name: e.name,
+        value: e.valueRedacted ? "[redacted]" : e.value,
+        sensitive: Boolean(e.sensitive),
+        valueRedacted: Boolean(e.valueRedacted),
+      })),
+    };
+    sink.write(result);
+    return result;
+  }
+
+  const allInstances: Record<string, unknown> = {};
+  for (const [id, inst] of Object.entries(providerInstances) as [string, any][]) {
+    allInstances[id] = {
+      driver: inst.driver,
+      displayName: inst.displayName,
+      environment: (inst.environment ?? []).map((e: any) => ({
+        name: e.name,
+        value: e.valueRedacted ? "[redacted]" : e.value,
+        sensitive: Boolean(e.sensitive),
+        valueRedacted: Boolean(e.valueRedacted),
+      })),
+    };
+  }
+
+  const result = { providerInstances: allInstances };
+  sink.write(result);
+  return result;
+}
+
+export async function setProviderCredential(options: ProviderCredentialSetOptions): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const pos = (options.positionals ?? []).filter((p) => p !== "set" && p !== "credentials" && p !== "credential");
+  let provider = options.provider;
+  let name = options.name;
+  let value = options.value;
+
+  if (!provider && !name && !value) {
+    if (pos.length >= 3) {
+      provider = pos[0];
+      name = pos[1];
+      value = pos[2];
+    } else if (pos.length === 2) {
+      name = pos[0];
+      value = pos[1];
+    }
+  } else if (!name && !value && pos.length >= 2) {
+    name = pos[0];
+    value = pos[1];
+  } else if (!value && pos.length >= 1) {
+    value = pos[0];
+  }
+
+  if (!name?.trim()) {
+    throw new ConfigError("Missing required credential name (--name or positional).", "credential_name_missing");
+  }
+  if (value === undefined) {
+    throw new ConfigError("Missing required credential value (--value or positional).", "credential_value_missing");
+  }
+
+  const nameTrimmed = name.trim();
+  const valueTrimmed = value.trim();
+  const sensitive = options.sensitive !== false;
+
+  const { settings, config } = await withClient(options, (client) => Effect.gen(function* () {
+    const settings = yield* client[WS_METHODS.serverGetSettings]({});
+    const config = yield* client[WS_METHODS.serverGetConfig]({});
+    return { settings, config };
+  })).catch((error: unknown) => {
+    throw describeSchemaMismatch(error) ?? error;
+  });
+
+  const providerInstances = settings?.providerInstances ?? {};
+  let targetInstanceId = provider;
+  let targetDriver: string | undefined;
+
+  if (targetInstanceId) {
+    const needle = targetInstanceId.toLowerCase();
+    const matchedKey = Object.keys(providerInstances).find(
+      (key) => key.toLowerCase() === needle || providerInstances[key]?.driver?.toLowerCase() === needle
+    );
+    if (matchedKey) {
+      targetInstanceId = matchedKey;
+      targetDriver = providerInstances[matchedKey].driver;
+    } else {
+      const configProvider = (config?.providers ?? []).find(
+        (p: any) => p.instanceId?.toLowerCase() === needle || p.driver?.toLowerCase() === needle || p.id?.toLowerCase() === needle
+      );
+      if (configProvider) {
+        targetInstanceId = configProvider.instanceId;
+        targetDriver = configProvider.driver;
+      }
+    }
+  }
+
+  if (!targetInstanceId) {
+    const defaultSelection = settings?.textGenerationModelSelection?.instanceId || loadConfig().defaultModel?.instanceId;
+    targetInstanceId = defaultSelection || "codex_personal";
+  }
+
+  const resolvedInstanceId: string = targetInstanceId!;
+
+  if (!targetDriver) {
+    targetDriver = providerInstances[resolvedInstanceId]?.driver || resolvedInstanceId;
+  }
+
+  const existingInstance = providerInstances[resolvedInstanceId] ?? {};
+  const existingEnv: Array<{ name: string; value: string; sensitive?: boolean; valueRedacted?: boolean }> = existingInstance.environment ?? [];
+
+  const updatedEnv = [...existingEnv];
+  const existingIdx = updatedEnv.findIndex((e) => e.name.toLowerCase() === nameTrimmed.toLowerCase());
+  const newEntry = { name: nameTrimmed, value: valueTrimmed, sensitive };
+
+  if (existingIdx >= 0) {
+    updatedEnv[existingIdx] = newEntry;
+  } else {
+    updatedEnv.push(newEntry);
+  }
+
+  const patch = {
+    providerInstances: {
+      ...providerInstances,
+      [resolvedInstanceId]: {
+        ...existingInstance,
+        driver: targetDriver,
+        environment: updatedEnv,
+      },
+    },
+  };
+
+  await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[WS_METHODS.serverUpdateSettings]({ patch });
+    yield* client[WS_METHODS.serverRefreshProviders]({ instanceId: resolvedInstanceId });
+  })).catch((error: unknown) => {
+    throw describeSchemaMismatch(error) ?? error;
+  });
+
+  const result = {
+    provider: resolvedInstanceId,
+    driver: targetDriver,
+    name: nameTrimmed,
+    sensitive,
+    updated: true,
+  };
+  sink.write(result);
+  return result;
+}
+
 export async function listThreads(options: CommandContext & { readonly projectId?: string }): Promise<unknown> {
   const { sink } = commandContext(options);
   const shell = await loadShell(options);

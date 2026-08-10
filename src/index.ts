@@ -2,6 +2,7 @@ import {
   authenticateLocal,
   authenticatePair,
   authStatus,
+  createPairingToken,
   removeAuthEnvironment,
   useEnvironment,
 } from "./auth.js";
@@ -12,6 +13,7 @@ import {
   cloneProject,
   deleteProject,
   deleteThread,
+  getProviderCredentials,
   interruptThread,
   listModels,
   listProjects,
@@ -20,6 +22,7 @@ import {
   respondToApproval,
   respondToUserInput,
   sendMessage,
+  setProviderCredential,
   settleThread,
   startThread,
   transcript,
@@ -33,6 +36,7 @@ import {
   toCommandError,
 } from "./app.js";
 import {
+  BOOLEAN_FLAGS,
   commandHelp,
   knownFlagsFor,
   ROOTS_WITH_SUBCOMMANDS,
@@ -67,6 +71,15 @@ function parseArgs(argv: readonly string[]): ParsedArgs {
         continue;
       }
       const name = token.slice(2);
+      if (BOOLEAN_FLAGS.has(name)) {
+        flags.set(name, true);
+        continue;
+      }
+      if (name.startsWith("no-") && BOOLEAN_FLAGS.has(name.slice(3))) {
+        flags.set(name.slice(3), false);
+        flags.set(name, true);
+        continue;
+      }
       const next = argv[index + 1];
       if (next !== undefined && !next.startsWith("-")) {
         flags.set(name, next);
@@ -242,6 +255,11 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       createOutputSink(format).write(result);
       return 0;
     }
+    if (subcommand === "pairing-token") {
+      const result = await createPairingToken({ label: flag(args, "label"), environment: context.environment });
+      createOutputSink(format).write(result);
+      return 0;
+    }
     if (subcommand === "use") {
       const result = useEnvironment(required(args, "name", args.positionals[0]));
       createOutputSink(format).write(result);
@@ -275,6 +293,39 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
   if (root === "models") {
     await listModels({ ...context, provider: flag(args, "provider") });
     return 0;
+  }
+  if (root === "provider") {
+    if (subcommand === "credentials" || subcommand === "credential" || subcommand === "get" || subcommand === "set") {
+      const isSet = subcommand === "set" || args.positionals[0] === "set";
+      const isGet = subcommand === "get" || args.positionals[0] === "get" || (!isSet && subcommand === "credentials");
+      if (isSet) {
+        const result = await setProviderCredential({
+          ...context,
+          provider: flag(args, "provider") || flag(args, "instance") || flag(args, "instance-id"),
+          name: flag(args, "name") || flag(args, "key"),
+          value: flag(args, "value") || flag(args, "val"),
+          sensitive: boolFlag(args, "non-sensitive") ? false : true,
+          positionals: args.positionals,
+        });
+        createOutputSink(format).write(result);
+        return 0;
+      }
+      if (isGet) {
+        const result = await getProviderCredentials({
+          ...context,
+          provider: flag(args, "provider") || flag(args, "instance") || flag(args, "instance-id"),
+          name: flag(args, "name") || flag(args, "key"),
+          positionals: args.positionals,
+        });
+        createOutputSink(format).write(result);
+        return 0;
+      }
+    }
+    if (subcommand === "list" || !subcommand) {
+      await listModels({ ...context, provider: flag(args, "provider") });
+      return 0;
+    }
+    throw new ConfigError("Unknown provider command. Use provider credentials get or provider credentials set.", "cli_parse_failed");
   }
   if (root === "status") {
     await listModels(context);

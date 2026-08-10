@@ -173,6 +173,72 @@ export async function removeAuthEnvironment(name: string): Promise<unknown> {
   return { environment: name, removed: true };
 }
 
+export interface PairingTokenResult {
+  readonly serverUrl: string;
+  readonly environment: string;
+  readonly pairingUrl: string;
+  readonly credential: string;
+  readonly expiresAt: string;
+  readonly label?: string;
+}
+
+export async function createPairingToken(options: {
+  readonly label?: string;
+  readonly environment?: string;
+}): Promise<PairingTokenResult> {
+  const config = loadConfig();
+  const envName = options.environment?.trim() || config.activeEnvironment;
+  if (!envName) throw new ConfigError("No active environment. Run \"t3ctl auth pair\" or \"t3ctl env use\".", "environment_missing");
+  const environment = config.environments[envName];
+  if (!environment) throw new ConfigError(`Environment "${envName}" is not configured.`, "environment_missing");
+  if (!environment.credentialId) throw new ConfigError(`Environment "${envName}" has no credential.`, "credential_missing");
+  const credentials = await createCredentialStore({ backend: environment.credentialBackend ?? "auto" });
+  const accessToken = await credentials.get(environment.credentialId);
+  if (!accessToken) {
+    throw new ConfigError(
+      `No credential is available for environment "${envName}". Run "t3ctl auth pair" or "t3ctl auth local".`,
+      "credential_missing",
+    );
+  }
+  const body: Record<string, string> = {};
+  if (options.label?.trim()) body.label = options.label.trim();
+  const response = await fetch(new URL("/api/auth/pairing-token", environment.serverUrl), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    let detail = "";
+    try {
+      const errorBody = await response.json() as { message?: string; error_description?: string };
+      detail = errorBody.message || errorBody.error_description || "";
+    } catch {
+      // Server returned non-JSON.
+    }
+    throw new ConfigError(
+      `Failed to create pairing token (HTTP ${response.status})${detail ? `: ${detail}` : "."}`,
+      "pairing_token_failed",
+    );
+  }
+  const result = await response.json() as { id?: string; credential?: string; expiresAt?: string; label?: string };
+  if (!result.credential) {
+    throw new ConfigError("Server response did not contain a pairing credential.", "pairing_token_failed");
+  }
+  const pairingUrl = `${environment.serverUrl.replace(/\/$/, "")}/pair#token=${encodeURIComponent(result.credential)}`;
+  return {
+    serverUrl: environment.serverUrl,
+    environment: envName,
+    pairingUrl,
+    credential: result.credential,
+    expiresAt: result.expiresAt ?? "unknown",
+    ...(result.label ? { label: result.label } : {}),
+  };
+}
+
 export function authError(error: unknown): ConfigError {
   return error instanceof ConfigError ? error : new ConfigError(errorMessage(error), "auth_failed");
 }
