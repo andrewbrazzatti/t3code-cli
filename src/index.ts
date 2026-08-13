@@ -45,6 +45,7 @@ import {
 } from "./commands.js";
 import { ConfigError } from "./config.js";
 import { outputFormatFromArgv, createOutputSink, type OutputFormat } from "./output.js";
+import { attachTerminal, closeTerminal, listTerminals } from "./terminal.js";
 
 interface ParsedArgs {
   readonly command: string[];
@@ -161,6 +162,29 @@ function required(args: ParsedArgs, name: string, positional?: string): string {
   const value = positional || flag(args, name);
   if (!value?.trim()) throw new ConfigError(`Missing required argument --${name}.`, "cli_parse_failed");
   return value.trim();
+}
+
+function parseIntFlag(value: string | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new ConfigError(`--${name} must be a positive integer.`, "cli_parse_failed");
+  return parsed;
+}
+
+function parseEnvList(value: string | undefined): Record<string, string> | undefined {
+  if (!value) return undefined;
+  const env: Record<string, string> = {};
+  for (const entry of value.split(",")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) throw new ConfigError(`Invalid environment variable "${trimmed}"; expected KEY=VALUE.`, "cli_parse_failed");
+    const key = trimmed.slice(0, separator).trim();
+    const val = trimmed.slice(separator + 1);
+    if (!key) throw new ConfigError(`Invalid environment variable "${trimmed}"; expected KEY=VALUE.`, "cli_parse_failed");
+    env[key] = val;
+  }
+  return env;
 }
 
 async function readMessage(args: ParsedArgs, positionalIndex = 0): Promise<string> {
@@ -403,6 +427,33 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       return 0;
     }
     throw new ConfigError("Unknown thread command.", "cli_parse_failed");
+  }
+  if (root === "terminal") {
+    const threadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID || args.positionals[0];
+    if (subcommand === "attach" || !subcommand) {
+      if (!threadId) throw new ConfigError("terminal attach requires a thread ID.", "thread_missing");
+      const exitCode = await attachTerminal({
+        ...context,
+        threadId,
+        terminalId: flag(args, "terminal-id"),
+        cwd: flag(args, "cwd"),
+        cols: parseIntFlag(flag(args, "cols"), "cols"),
+        rows: parseIntFlag(flag(args, "rows"), "rows"),
+        env: parseEnvList(flag(args, "env-var")),
+      });
+      return exitCode;
+    }
+    if (subcommand === "list") {
+      if (!threadId) throw new ConfigError("terminal list requires a thread ID.", "thread_missing");
+      await listTerminals({ ...context, threadId });
+      return 0;
+    }
+    if (subcommand === "close") {
+      if (!threadId) throw new ConfigError("terminal close requires a thread ID.", "thread_missing");
+      await closeTerminal({ ...context, threadId, terminalId: flag(args, "terminal-id"), deleteHistory: boolFlag(args, "delete-history") });
+      return 0;
+    }
+    throw new ConfigError("Unknown terminal command. Use terminal attach, terminal list, or terminal close.", "cli_parse_failed");
   }
   if (root === "connect") {
     // Clean-break alias retained as a discoverable migration path.

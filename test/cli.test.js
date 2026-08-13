@@ -90,6 +90,27 @@ test("a server/CLI schema mismatch is reported as a version problem", async () =
   assert.equal(describeSchemaMismatch(new Error("WebSocket connection failed: 401 Unauthorized")), undefined);
 });
 
+test("CLI accepts terminal attach, list, and close flags", async () => {
+  const { assertKnownFlags } = await import("../dist/index.js");
+  assert.doesNotThrow(() => assertKnownFlags(["terminal", "attach"], ["thread", "terminal-id", "cwd", "cols", "rows", "env-var"]));
+  assert.doesNotThrow(() => assertKnownFlags(["terminal", "list"], ["thread-id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["terminal", "close"], ["thread", "terminal-id", "delete-history"]));
+  // A model-selection flag from a sibling command must be rejected.
+  assert.throws(() => assertKnownFlags(["terminal", "attach"], ["model"]), /Unknown flag "--model"/);
+});
+
+test("terminal commands are documented and scoped", async () => {
+  const { commandHelp, topLevelHelp } = await import("../dist/commands.js");
+  const attachHelp = commandHelp(["terminal", "attach"]);
+  assert.match(attachHelp, /t3ctl terminal attach —/);
+  assert.match(attachHelp, /--terminal-id/);
+  assert.match(attachHelp, /--cwd/);
+  // Flags belonging to sibling terminal commands must not leak.
+  assert.doesNotMatch(attachHelp, /--delete-history/);
+  assert.match(topLevelHelp(), /terminal attach/);
+  assert.match(topLevelHelp(), /terminal list\|close/);
+});
+
 test("CLI parses --fast-mode as boolean without consuming positionals", async () => {
   const { parseArgs } = await import("../dist/index.js");
   const parsed = parseArgs(["thread", "update", "--fast-mode", "thread-123"]);

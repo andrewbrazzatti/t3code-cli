@@ -18,7 +18,7 @@ export interface CommandContext extends TargetOptions {
 
 type Client = any;
 
-async function withClient(options: TargetOptions, use: (client: Client, target: Awaited<ReturnType<typeof resolveTargetAsync>>) => any): Promise<any> {
+export async function withClient(options: TargetOptions, use: (client: Client, target: Awaited<ReturnType<typeof resolveTargetAsync>>) => any): Promise<any> {
   const target = await resolveTargetAsync(options);
   return Effect.runPromise(Effect.scoped(Effect.gen(function* () {
     const client = yield* connectClient(target.socketUrl, target.token);
@@ -26,7 +26,7 @@ async function withClient(options: TargetOptions, use: (client: Client, target: 
   })) as any) as Promise<any>;
 }
 
-function commandContext(options: CommandContext, stream = false): { sink: OutputSink; options: TargetOptions } {
+export function commandContext(options: CommandContext, stream = false): { sink: OutputSink; options: TargetOptions } {
   return {
     sink: options.sink ?? createOutputSink(options.format, { stream, stdoutIsTTY: process.stdout.isTTY }),
     options,
@@ -76,6 +76,34 @@ async function loadThread(options: TargetOptions, threadId: string): Promise<any
     if (!thread) throw new ConfigError(`Thread "${threadId}" was not found.`, "thread_missing");
     return thread;
   }));
+}
+
+/**
+ * Resolve a thread and derive the working directory an interactive terminal
+ * should open in: the thread's worktree when present, otherwise its project's
+ * workspace root. Terminals are thread-scoped on the server, so a target thread
+ * is required before a shell can be opened.
+ *
+ * Resolves against the merged shell snapshot (active + archived) rather than
+ * the active-only thread detail projection, so archived threads remain usable
+ * as terminal targets.
+ */
+export async function resolveThreadContext(options: TargetOptions, threadId: string): Promise<{ thread: any; cwd: string; worktreePath: string | null }> {
+  const shell = await loadShell(options);
+  const thread = shell.threads.find((entry: any) => entry.id === threadId);
+  if (!thread) {
+    throw new ConfigError(`Thread "${threadId}" was not found. Run "t3ctl thread list" to see available threads.`, "thread_missing");
+  }
+  const worktreePath = typeof thread.worktreePath === "string" && thread.worktreePath.trim() ? thread.worktreePath : null;
+  let cwd = worktreePath;
+  if (!cwd && thread.projectId) {
+    const project = shell.projects.find((entry: any) => entry.id === thread.projectId);
+    cwd = typeof project?.workspaceRoot === "string" && project.workspaceRoot.trim() ? project.workspaceRoot : null;
+  }
+  if (!cwd) {
+    throw new ConfigError(`Could not determine a working directory for thread "${threadId}". Pass --cwd to select one.`, "cwd_missing");
+  }
+  return { thread, cwd, worktreePath };
 }
 
 export async function listProjects(options: CommandContext): Promise<unknown> {

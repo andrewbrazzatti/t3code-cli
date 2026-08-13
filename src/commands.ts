@@ -262,6 +262,33 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     ],
   },
 
+  "terminal attach": {
+    usage: "<thread-id>",
+    summary: "Open an interactive terminal for a thread",
+    flags: [
+      ...THREAD_ID_FLAGS,
+      { name: "terminal-id", arg: "ID", description: "Terminal session ID (default: term-1)" },
+      { name: "cwd", arg: "PATH", description: "Working directory (default: thread worktree or project root)" },
+      { name: "cols", arg: "N", description: "Initial terminal columns (default: current TTY width)" },
+      { name: "rows", arg: "N", description: "Initial terminal rows (default: current TTY height)" },
+      { name: "env-var", arg: "KEY=VALUE,…", description: "Environment variables for the shell, comma separated" },
+    ],
+  },
+  "terminal list": {
+    usage: "<thread-id>",
+    summary: "List terminal sessions for a thread",
+    flags: [...THREAD_ID_FLAGS],
+  },
+  "terminal close": {
+    usage: "<thread-id>",
+    summary: "Close a terminal session",
+    flags: [
+      ...THREAD_ID_FLAGS,
+      { name: "terminal-id", arg: "ID", description: "Terminal session ID (default: close all for the thread)" },
+      { name: "delete-history", description: "Also delete the terminal's persisted history" },
+    ],
+  },
+
   "connect": {
     usage: "<pairing-url>",
     summary: "Alias of `auth pair`, kept as a migration path",
@@ -299,7 +326,7 @@ const ALIASES: Readonly<Record<string, string>> = {
 };
 
 /** Roots whose second token is a subcommand rather than a positional. */
-export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider"]);
+export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal"]);
 
 export function commandKey(command: readonly string[]): string {
   const raw = command.join(" ");
@@ -380,6 +407,10 @@ Provider credentials:
 Threads:
   thread create|start|send|wait|watch|view|transcript|list
   thread archive|unarchive|delete|update|interrupt|settle|unsettle|respond|respond-input
+
+Terminals:
+  terminal attach <thread-id> [--terminal-id ID] [--cwd PATH] [--env-var KEY=VALUE,...]
+  terminal list|close <thread-id>
 
 Automation:
   Prompts may be positional, passed with --message/--prompt, or read from stdin.

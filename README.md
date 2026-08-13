@@ -74,9 +74,23 @@ models [--provider NAME]
 project list | add | clone | update | delete
 thread list | create | start | send | wait | watch | view | transcript
 thread archive | unarchive | delete | update | interrupt | settle | unsettle | respond | respond-input
+terminal attach | list | close
 ```
 
 Thread creation and updates support `--provider`, `--model`, `--runtime-mode`, `--interaction-mode`, and provider options such as `--option effort=max` or `--effort high`. Project and thread selectors accept IDs, titles, and workspace-root names where applicable.
+
+## Terminals
+
+Open an interactive shell on a thread's worktree (or its project root):
+
+```sh
+t3ctl terminal attach <thread-id>
+t3ctl terminal attach <thread-id> --cwd /path/to/dir --env-var FOO=bar
+t3ctl terminal list <thread-id>
+t3ctl terminal close <thread-id> --terminal-id term-1 --delete-history
+```
+
+Terminals are thread-scoped on the server. `attach` requires an existing thread and an interactive TTY; it forwards keystrokes and control sequences, reports resizes, and returns the remote shell's exit code.
 
 ## Verification
 
