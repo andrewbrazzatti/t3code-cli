@@ -71,10 +71,14 @@ NDJSON stream records use `version`, `type`, `timestamp`, and command-specific f
 auth pair | local | status
 env list | use | remove
 models [--provider NAME]
+provider credentials get | set
+provider limits | reset-credit
 project list | add | clone | update | delete
 thread list | create | start | send | wait | watch | view | transcript
 thread archive | unarchive | delete | update | interrupt | settle | unsettle | respond | respond-input
 terminal attach | list | close
+schedule add | list | enable | disable | cancel | run | deliveries | rotate-webhook | subscribe
+usage [--since D --until D] | refresh-rates
 ```
 
 Thread creation and updates support `--provider`, `--model`, `--runtime-mode`, `--interaction-mode`, and provider options such as `--option effort=max` or `--effort high`. Project and thread selectors accept IDs, titles, and workspace-root names where applicable.
@@ -91,6 +95,27 @@ t3ctl terminal close <thread-id> --terminal-id term-1 --delete-history
 ```
 
 Terminals are thread-scoped on the server. `attach` requires an existing thread and an interactive TTY; it forwards keystrokes and control sequences, reports resizes, and returns the remote shell's exit code.
+
+## Scheduled tasks
+
+Schedules run on the T3 Code server, so the CLI keeps no local queue and needs no long-running runner. `schedule add` takes exactly one trigger: `--every DURATION` (interval, minimum 1m), `--at HH:MM` with optional `--weekdays`, or `--webhook`.
+
+```sh
+t3ctl schedule add --project my-project --every 1h --message "Check for new failures"
+t3ctl schedule add --thread <id> --at 09:30 --weekdays mon,tue,wed,fri --message "Standup summary"
+t3ctl schedule list
+t3ctl schedule run <id>          # fire once, now
+t3ctl schedule cancel <id>       # delete
+```
+
+## Usage and quota
+
+```sh
+t3ctl usage                      # token/cost buckets, last 7 days
+t3ctl usage --since 2026-09-01 --until 2026-09-30 --hourly
+t3ctl provider limits            # subscription windows and reset times
+t3ctl provider reset-credit codex_personal
+```
 
 ## Verification
 

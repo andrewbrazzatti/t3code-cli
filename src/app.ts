@@ -54,7 +54,7 @@ function projectMatches(project: any, query: string): boolean {
     .some((value) => value.toLowerCase() === needle || value.toLowerCase().includes(needle));
 }
 
-async function loadShell(options: TargetOptions): Promise<{ projects: any[]; threads: any[] }> {
+export async function loadShell(options: TargetOptions): Promise<{ projects: any[]; threads: any[] }> {
   return withClient(options, (client) => Effect.gen(function* () {
     let live: any;
     const liveStream = client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({});
@@ -506,7 +506,7 @@ interface ModelOptions {
   readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>;
 }
 
-function resolveModel(options: ModelOptions, project?: any): { instanceId: string; model: string; options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }> } {
+export function resolveModel(options: ModelOptions, project?: any): { instanceId: string; model: string; options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }> } {
   const configured = project?.defaultModelSelection ?? loadConfig().defaultModel;
   return {
     instanceId: options.provider || configured?.instanceId || "codex_personal",
@@ -515,7 +515,7 @@ function resolveModel(options: ModelOptions, project?: any): { instanceId: strin
   };
 }
 
-async function resolveProject(options: TargetOptions, query: string): Promise<any> {
+export async function resolveProject(options: TargetOptions, query: string): Promise<any> {
   const projects = (await loadShell(options)).projects;
   const project = projects.find((entry: any) => projectMatches(entry, query));
   if (!project) throw new ConfigError(`Project "${query}" was not found.`, "project_missing");
@@ -598,7 +598,7 @@ async function resolveWorktreeBaseBranch(options: TargetOptions & WorktreeSettin
 }
 
 /** Translate CLI worktree flags into the V2 launch workspace strategy. */
-async function buildWorkspaceStrategy(options: TargetOptions & WorktreeSettings, workspaceRoot: string): Promise<Record<string, unknown>> {
+export async function buildWorkspaceStrategy(options: TargetOptions & WorktreeSettings, workspaceRoot: string): Promise<Record<string, unknown>> {
   const branch = options.branch?.trim();
   if (options.worktreePath?.trim()) {
     return { type: "existing_worktree", worktreePath: options.worktreePath.trim(), ...(branch ? { branch } : {}) };

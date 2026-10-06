@@ -155,33 +155,45 @@ test("thread start parses --worktree as boolean and --worktree-path with a value
 
 test("CLI accepts schedule flags, rejects leaked ones, and documents the commands", async () => {
   const { assertKnownFlags } = await import("../dist/index.js");
-  assert.doesNotThrow(() => assertKnownFlags(["schedule", "add"], ["thread", "message", "image", "at", "in", "retry-until", "retry-interval", "provider", "model", "runtime-mode"]));
-  assert.doesNotThrow(() => assertKnownFlags(["schedule", "list"], ["all"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "add"], ["thread", "project", "id", "title", "disabled", "message", "every", "at", "weekdays", "webhook", "worktree", "worktree-path", "base-branch", "branch", "from-origin", "provider", "model", "runtime-mode", "interaction-mode"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "enable"], ["id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "disable"], ["id"]));
   assert.doesNotThrow(() => assertKnownFlags(["schedule", "cancel"], ["id"]));
-  assert.doesNotThrow(() => assertKnownFlags(["schedule", "run"], ["interval", "once"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "run"], ["id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "deliveries"], ["id", "delivery-id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "rotate-webhook"], ["id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "subscribe"], []));
   // Aliased subcommands validate against the command they resolve to.
   assert.doesNotThrow(() => assertKnownFlags(["schedule", "rm"], ["id"]));
-  // --wait makes no sense for a queued send; worktree flags belong to threads.
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "run-now"], ["id"]));
+  // --wait makes no sense for a scheduled task; the old client-side flags are gone.
   assert.throws(() => assertKnownFlags(["schedule", "add"], ["wait"]), /Unknown flag "--wait"/);
-  assert.throws(() => assertKnownFlags(["schedule", "add"], ["worktree"]), /Unknown flag "--worktree"/);
-  assert.throws(() => assertKnownFlags(["schedule", "run"], ["in"]), /Unknown flag "--in"/);
+  assert.throws(() => assertKnownFlags(["schedule", "add"], ["in"]), /Unknown flag "--in"/);
+  assert.throws(() => assertKnownFlags(["schedule", "run"], ["once"]), /Unknown flag "--once"/);
+  // Provider quota and usage surfaces.
+  assert.doesNotThrow(() => assertKnownFlags(["provider", "limits"], ["provider"]));
+  assert.doesNotThrow(() => assertKnownFlags(["provider", "reset-credit"], ["provider"]));
+  assert.doesNotThrow(() => assertKnownFlags(["usage"], ["since", "until", "timezone", "hourly"]));
+  assert.doesNotThrow(() => assertKnownFlags(["usage", "refresh-rates"], []));
 });
 
 test("schedule help is scoped and the root is documented", async () => {
   const { commandHelp, topLevelHelp } = await import("../dist/commands.js");
   const addHelp = commandHelp(["schedule", "add"]);
   assert.match(addHelp, /t3ctl schedule add —/);
-  assert.match(addHelp, /--retry-until/);
-  assert.match(addHelp, /--in/);
+  assert.match(addHelp, /--every/);
+  assert.match(addHelp, /--at/);
+  assert.match(addHelp, /--webhook/);
   // Sibling schedule commands must not leak into add's help.
-  assert.doesNotMatch(addHelp, /--once/);
+  assert.doesNotMatch(addHelp, /--delivery-id/);
   const runHelp = commandHelp(["schedule", "run"]);
-  assert.match(runHelp, /--once/);
-  assert.match(runHelp, /--interval/);
+  assert.match(runHelp, /--id/);
+  assert.doesNotMatch(runHelp, /--every/);
   const top = topLevelHelp();
-  assert.match(top, /schedule add <thread-id>/);
-  assert.match(top, /schedule run/);
-  assert.match(top, /queue a resume/i);
+  assert.match(top, /schedule add \[prompt\]/);
+  assert.match(top, /schedule run <id>/);
+  assert.match(top, /usage \[--since/);
+  assert.match(top, /provider limits/);
 });
 
 test("impossible worktree flag combinations are rejected before any network traffic", async () => {
@@ -220,11 +232,11 @@ test("thread send and schedule add parse positional messages when --thread is pa
   assert.equal(sendFlag.flags.get("thread"), "thr_123");
   assert.equal(sendFlag.positionals[0], "hello");
 
-  const schedPositional = parseArgs(["schedule", "add", "thr_123", "continue", "--in", "5h"]);
-  assert.equal(schedPositional.positionals[0], "thr_123");
-  assert.equal(schedPositional.positionals[1], "continue");
+  const schedPositional = parseArgs(["schedule", "add", "continue", "--every", "5m"]);
+  assert.equal(schedPositional.positionals[0], "continue");
+  assert.equal(schedPositional.flags.get("every"), "5m");
 
-  const schedFlag = parseArgs(["schedule", "add", "--thread", "thr_123", "continue", "--in", "5h"]);
+  const schedFlag = parseArgs(["schedule", "add", "--thread", "thr_123", "continue", "--every", "5m"]);
   assert.equal(schedFlag.flags.get("thread"), "thr_123");
   assert.equal(schedFlag.positionals[0], "continue");
 });

@@ -45,8 +45,9 @@ import {
 } from "./commands.js";
 import { ConfigError } from "./config.js";
 import { outputFormatFromArgv, createOutputSink, type OutputFormat } from "./output.js";
-import { scheduleAdd, scheduleCancel, scheduleList, scheduleRun } from "./schedule.js";
+import { scheduleAdd, scheduleCancel, scheduleDeliveries, scheduleList, scheduleRotateWebhook, scheduleRunNow, scheduleSetEnabled, scheduleSubscribe } from "./schedule.js";
 import { attachTerminal, closeTerminal, listTerminals } from "./terminal.js";
+import { consumeResetCredit, getUsage, listProviderLimits, refreshUsageRates } from "./usage.js";
 
 interface ParsedArgs {
   readonly command: string[];
@@ -350,7 +351,15 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       await listModels({ ...context, provider: flag(args, "provider") });
       return 0;
     }
-    throw new ConfigError("Unknown provider command. Use provider credentials get or provider credentials set.", "cli_parse_failed");
+    if (subcommand === "limits" || subcommand === "usage") {
+      await listProviderLimits({ ...context, provider: flag(args, "provider") });
+      return 0;
+    }
+    if (subcommand === "reset-credit" || subcommand === "reset") {
+      await consumeResetCredit({ ...context, provider: required(args, "provider", args.positionals[0]) });
+      return 0;
+    }
+    throw new ConfigError("Unknown provider command. Use provider credentials get|set, provider limits, or provider reset-credit.", "cli_parse_failed");
   }
   if (root === "status") {
     await listModels(context);
@@ -460,45 +469,80 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
   }
   if (root === "schedule") {
     if (subcommand === "add") {
-      const explicitThreadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID;
-      const scheduleThreadId = explicitThreadId || args.positionals[0];
-      if (!scheduleThreadId) throw new ConfigError("schedule add requires a thread ID.", "thread_missing");
-      const message = await readMessage(args, explicitThreadId ? 0 : 1);
-      const entry = await scheduleAdd({
+      const message = await readMessage(args, 0);
+      await scheduleAdd({
         ...context,
-        threadId: scheduleThreadId,
+        scheduleId: flag(args, "id"),
+        threadId: flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID,
+        projectId: flag(args, "project") || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID,
+        title: flag(args, "title"),
         message,
-        images: imageFlags(args),
+        enabled: !boolFlag(args, "disabled"),
+        every: flag(args, "every"),
         at: flag(args, "at"),
-        in: flag(args, "in"),
-        retryUntil: flag(args, "retry-until"),
-        retryInterval: flag(args, "retry-interval"),
+        weekdays: flag(args, "weekdays"),
+        webhook: boolFlag(args, "webhook"),
+        worktree: boolFlag(args, "worktree"),
+        worktreePath: flag(args, "worktree-path"),
+        baseBranch: flag(args, "base-branch"),
+        branch: flag(args, "branch"),
+        fromOrigin: boolFlag(args, "from-origin"),
         provider: flag(args, "provider"),
         model: flag(args, "model"),
         runtimeMode: flag(args, "runtime-mode"),
         interactionMode: flag(args, "interaction-mode"),
         options: modelOptions(args),
       });
-      createOutputSink(format).write(entry);
       return 0;
     }
     if (subcommand === "list") {
-      const result = await scheduleList({ ...context, all: boolFlag(args, "all") });
-      createOutputSink(format).write(result);
+      await scheduleList({ ...context });
+      return 0;
+    }
+    if (subcommand === "enable" || subcommand === "disable") {
+      const scheduleId = required(args, "id", args.positionals[0]);
+      await scheduleSetEnabled({ ...context, scheduleId, enabled: subcommand === "enable" });
       return 0;
     }
     if (subcommand === "cancel" || subcommand === "rm" || subcommand === "remove") {
       const scheduleId = required(args, "id", args.positionals[0]);
-      const entry = await scheduleCancel({ ...context, scheduleId });
-      createOutputSink(format).write(entry);
+      await scheduleCancel({ ...context, scheduleId });
       return 0;
     }
-    if (subcommand === "run") {
-      const summary = await scheduleRun({ ...context, interval: flag(args, "interval"), once: boolFlag(args, "once") });
-      createOutputSink(format).write(summary);
-      return summary.failed > 0 ? 1 : 0;
+    if (subcommand === "run" || subcommand === "run-now") {
+      const scheduleId = required(args, "id", args.positionals[0]);
+      await scheduleRunNow({ ...context, scheduleId });
+      return 0;
     }
-    throw new ConfigError("Unknown schedule command. Use schedule add, schedule list, schedule cancel, or schedule run.", "cli_parse_failed");
+    if (subcommand === "deliveries") {
+      const scheduleId = required(args, "id", args.positionals[0]);
+      await scheduleDeliveries({ ...context, scheduleId, deliveryId: flag(args, "delivery-id") });
+      return 0;
+    }
+    if (subcommand === "rotate-webhook") {
+      const scheduleId = required(args, "id", args.positionals[0]);
+      await scheduleRotateWebhook({ ...context, scheduleId });
+      return 0;
+    }
+    if (subcommand === "subscribe" || subcommand === "watch") {
+      await scheduleSubscribe({ ...context, format: "ndjson" });
+      return 0;
+    }
+    throw new ConfigError("Unknown schedule command. Use schedule add, list, enable, disable, cancel, run, deliveries, rotate-webhook, or subscribe.", "cli_parse_failed");
+  }
+  if (root === "usage") {
+    if (subcommand === "refresh-rates" || subcommand === "refresh") {
+      await refreshUsageRates({ ...context });
+      return 0;
+    }
+    await getUsage({
+      ...context,
+      since: flag(args, "since"),
+      until: flag(args, "until"),
+      timezone: flag(args, "timezone") || flag(args, "tz"),
+      hourly: boolFlag(args, "hourly"),
+    });
+    return 0;
   }
   if (root === "connect") {
     // Clean-break alias retained as a discoverable migration path.

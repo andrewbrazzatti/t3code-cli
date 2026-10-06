@@ -14,24 +14,29 @@ Successful one-shot results are command objects. Common identifiers use the foll
 }
 ```
 
-Thread listing returns `{ "threads": [...] }`, project listing returns `{ "projects": [...] }`, model listing returns `{ "providers": [...] }`, and schedule listing returns `{ "schedules": [...] }` with entries shaped as:
+Thread listing returns `{ "threads": [...] }`, project listing returns `{ "projects": [...] }`, model listing returns `{ "providers": [...] }`, and scheduled-task listing returns `{ "tasks": [...] }`. A scheduled task is the server's own record (the CLI stores nothing locally):
 
 ```json
 {
-  "id": "sched_...",
-  "environment": "production",
-  "threadId": "thread_...",
-  "message": "Resume the task",
-  "dueAt": "2026-09-03T18:00:00.000Z",
-  "retryUntil": "2026-09-03T20:00:00.000Z",
-  "retryIntervalMs": 900000,
-  "state": "pending",
-  "attempts": 0,
-  "createdAt": "2026-09-03T12:00:00.000Z"
+  "id": "scheduled-task:...",
+  "title": "Nightly triage",
+  "prompt": "Summarize new issues",
+  "enabled": true,
+  "schedule": { "type": "fixed_time", "timeOfDay": "09:30", "weekdays": [1, 2, 3, 4, 5] },
+  "projectId": "project_...",
+  "threadId": null,
+  "workspaceStrategy": { "type": "root" },
+  "modelSelection": { "instanceId": "codex_personal", "model": "gpt-5.6-luna" },
+  "runtimeMode": "full-access",
+  "interactionMode": "default",
+  "nextRunAt": "2026-09-04T09:30:00.000Z",
+  "lastRunAt": null,
+  "lastRunStatus": "never",
+  "runCount": 0
 }
 ```
 
-`environment` is set when the entry is pinned to a named environment; otherwise `serverUrl` is pinned instead. States are `pending`, `running`, `sent`, `failed`, and `cancelled`. `thread wait` results also carry an `errorText` field (the last failure reason observed on the thread) when the turn failed, which `schedule run` uses to decide rate-limit retries.
+`schedule.type` is `interval` (`everyMs`), `fixed_time` (`timeOfDay`, optional `weekdays`), or `webhook` (with an optional HMAC `signature` and a `webhook` endpoint block). `thread wait` results carry an `errorText` field (the provider failure message observed on the thread) when the turn failed.
 
 ## Error envelope
 
@@ -63,15 +68,24 @@ The terminal `status` values are `completed`, `interrupted`, `failed`, and `appr
 
 Wait exit codes are `0` for completed, `10` when approval or user input is required, `130` when interrupted, and `1` for a failed turn or transport failure.
 
-## Scheduled send events
+## Scheduled tasks
 
-`t3ctl schedule run` emits one record per state transition:
+Scheduling runs on the T3 Code server, so the CLI keeps no local queue and needs no long-running runner. `t3ctl schedule add` maps to `scheduledTasks.upsert`; `--every` becomes an `interval` trigger, `--at` a `fixed_time` trigger, and `--webhook` a `webhook` trigger. Exactly one is required.
 
-```json
-{"version":1,"type":"schedule.fired","timestamp":"2026-09-03T18:00:00.000Z","scheduleId":"sched_1","threadId":"thread_1","attempt":1,"dueAt":"2026-09-03T18:00:00.000Z","firedAt":"2026-09-03T18:00:00.100Z"}
-{"version":1,"type":"schedule.sent","timestamp":"2026-09-03T18:05:00.000Z","scheduleId":"sched_1","threadId":"thread_1","status":"completed"}
-{"version":1,"type":"schedule.rescheduled","timestamp":"2026-09-03T18:02:00.000Z","scheduleId":"sched_2","threadId":"thread_2","error":"usage limit reached","nextAttemptAt":"2026-09-03T18:17:00.000Z"}
-{"version":1,"type":"schedule.failed","timestamp":"2026-09-03T18:03:00.000Z","scheduleId":"sched_3","threadId":"thread_3","error":"File not found"}
+```sh
+t3ctl schedule add --project my-project --every 1h --message "Check for new failures"
+t3ctl schedule add --thread <id> --at 09:30 --weekdays mon,tue,wed,fri --message "Standup summary"
+t3ctl schedule list
+t3ctl schedule disable <id>
+t3ctl schedule run <id>          # fire once, now
+t3ctl schedule deliveries <id>   # webhook delivery log
+t3ctl schedule cancel <id>       # delete
 ```
 
-`schedule run --once` exits `0` when every fired entry ended `sent` (or was rescheduled for a later retry) and `1` when any entry ended `failed`. Error codes specific to this feature: `schedule_missing`, `schedule_ambiguous`, `schedule_not_cancellable`, `schedule_store_read_failed`, and `schedule_store_invalid`.
+`t3ctl schedule subscribe` streams the current task list as NDJSON (`schedule.snapshot` records) whenever it changes. Error codes specific to this feature: `schedule_missing`, `schedule_ambiguous`, and `cli_parse_failed` for an invalid trigger.
+
+## Usage and quota
+
+`t3ctl usage` reports token and cost buckets from `server.getUsageSummary`; `--hourly` switches the resolution and `--since`/`--until`/`--timezone` bound the window. `t3ctl usage refresh-rates` refreshes the price table used for cost estimates.
+
+`t3ctl provider limits` lists each provider's subscription windows (`usedPercent`, `resetsAt`) and any banked reset credits, read from `server.getConfig`. `t3ctl provider reset-credit <provider>` redeems one via `provider.consumeResetCredit`.

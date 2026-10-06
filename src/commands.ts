@@ -70,15 +70,32 @@ const MESSAGE_FLAGS: readonly FlagSpec[] = [
   { name: "wait", description: "Emit NDJSON lifecycle events and wait for completion" },
 ];
 
-/** Message flags for commands that queue a send for later, where --wait makes no sense. */
-const QUEUED_MESSAGE_FLAGS: readonly FlagSpec[] = MESSAGE_FLAGS.filter((flag) => flag.name !== "wait");
+/** Prompt text for a scheduled task; the task stores a plain string, not files. */
+const SCHEDULE_MESSAGE_FLAGS: readonly FlagSpec[] = [
+  { name: "message", arg: "TEXT", description: "Prompt to run when the task fires (also positional or on stdin)" },
+  { name: "prompt", arg: "TEXT", description: "Alias of --message", hidden: true },
+];
 
-/** Scheduling flags shared by `schedule add`. */
-const SCHEDULE_WHEN_FLAGS: readonly FlagSpec[] = [
-  { name: "at", arg: "TIME", description: "Send at an ISO time in the future (e.g. 2026-09-03T18:00). Mutually exclusive with --in" },
-  { name: "in", arg: "DURATION", description: "Send after a duration (e.g. 45m, 2h30m, 1d12h). Mutually exclusive with --at" },
-  { name: "retry-until", arg: "DURATION", description: "Keep re-sending while turns fail with a rate-limit error, until this long after the scheduled time" },
-  { name: "retry-interval", arg: "DURATION", description: "Delay between rate-limit retries (default: 15m)" },
+/** Trigger flags shared by `schedule add`; exactly one is required. */
+const SCHEDULE_TRIGGER_FLAGS: readonly FlagSpec[] = [
+  { name: "every", arg: "DURATION", description: "Run on an interval (minimum 1m), e.g. 45m, 2h30m" },
+  { name: "at", arg: "HH:MM", description: "Run at a local wall-clock time each day (or on --weekdays)" },
+  { name: "weekdays", arg: "DAYS", description: "Days for --at: 0-6 (0=Sun) or mon,tue,... (default: every day)" },
+  { name: "webhook", description: "Run on each request to the task's webhook URL" },
+];
+
+/** Target and identity flags for `schedule add`. */
+const SCHEDULE_TARGET_FLAGS: readonly FlagSpec[] = [
+  { name: "project", arg: "ID", description: "Project to launch new threads in" },
+  { name: "thread", arg: "ID", description: "Send the prompt to an existing thread instead of launching one" },
+  { name: "thread-id", arg: "ID", description: "Alias of --thread", hidden: true },
+  { name: "id", arg: "ID", description: "Update an existing scheduled task by ID" },
+  { name: "title", arg: "TITLE", description: "Task title (default: first line of the prompt)" },
+  { name: "disabled", description: "Create the task disabled" },
+];
+
+const SCHEDULE_ID_FLAG: readonly FlagSpec[] = [
+  { name: "id", arg: "ID", description: "Scheduled task ID (may also be given positionally)" },
 ];
 
 /**
@@ -165,6 +182,31 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       { name: "non-sensitive", description: "Mark credential as non-sensitive" },
     ],
   },
+  "provider limits": {
+    summary: "Show subscription usage windows and banked reset credits",
+    flags: [{ name: "provider", arg: "NAME", description: "Filter to one provider instance" }],
+  },
+  "provider reset-credit": {
+    usage: "<provider>",
+    summary: "Redeem a banked provider reset credit",
+    flags: [
+      { name: "provider", arg: "ID", description: "Provider instance ID or driver name" },
+      { name: "instance", arg: "ID", description: "Alias of --provider", hidden: true },
+      { name: "instance-id", arg: "ID", description: "Alias of --provider", hidden: true },
+    ],
+  },
+
+  usage: {
+    summary: "Show token and cost usage over a date range",
+    flags: [
+      { name: "since", arg: "YYYY-MM-DD", description: "First day of the window (default: 6 days ago)" },
+      { name: "until", arg: "YYYY-MM-DD", description: "Last day of the window (default: today)" },
+      { name: "timezone", arg: "TZ", description: "IANA time zone to bucket days in (default: local)" },
+      { name: "tz", arg: "TZ", description: "Alias of --timezone", hidden: true },
+      { name: "hourly", description: "Bucket by hour instead of by day" },
+    ],
+  },
+  "usage refresh-rates": { summary: "Refresh the model price table used for cost estimates", flags: [] },
 
   "project list": { summary: "List projects", flags: [] },
   "project add": {
@@ -285,26 +327,42 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   },
 
   "schedule add": {
-    usage: "<thread-id> [prompt]",
-    summary: "Queue a message to send to a thread at a future time (requires `schedule run`)",
-    flags: [...THREAD_ID_FLAGS, ...QUEUED_MESSAGE_FLAGS, ...MODEL_FLAGS, ...MODE_FLAGS, ...SCHEDULE_WHEN_FLAGS],
+    usage: "[prompt]",
+    summary: "Create or update a server-side scheduled task (requires exactly one of --every, --at, --webhook)",
+    flags: [...SCHEDULE_TARGET_FLAGS, ...SCHEDULE_MESSAGE_FLAGS, ...MODEL_FLAGS, ...MODE_FLAGS, ...WORKTREE_FLAGS, ...SCHEDULE_TRIGGER_FLAGS],
   },
-  "schedule list": {
-    summary: "List scheduled sends",
-    flags: [{ name: "all", description: "Include sent, failed, and cancelled entries" }],
+  "schedule list": { summary: "List scheduled tasks", flags: [] },
+  "schedule enable": {
+    usage: "<id>",
+    summary: "Enable a scheduled task",
+    flags: [...SCHEDULE_ID_FLAG],
+  },
+  "schedule disable": {
+    usage: "<id>",
+    summary: "Disable a scheduled task without deleting it",
+    flags: [...SCHEDULE_ID_FLAG],
   },
   "schedule cancel": {
     usage: "<id>",
-    summary: "Cancel a scheduled send before it fires",
-    flags: [{ name: "id", arg: "ID", description: "Schedule ID (may also be given positionally)" }],
+    summary: "Delete a scheduled task",
+    flags: [...SCHEDULE_ID_FLAG],
   },
   "schedule run": {
-    summary: "Run the scheduler loop that fires due scheduled sends",
-    flags: [
-      { name: "interval", arg: "DURATION", description: "Poll interval between due-entry checks (default: 15s)" },
-      { name: "once", description: "Fire entries currently due, then exit (cron-friendly)" },
-    ],
+    usage: "<id>",
+    summary: "Run a scheduled task immediately",
+    flags: [...SCHEDULE_ID_FLAG],
   },
+  "schedule deliveries": {
+    usage: "<id>",
+    summary: "List webhook deliveries for a task (or one with --delivery-id)",
+    flags: [...SCHEDULE_ID_FLAG, { name: "delivery-id", arg: "ID", description: "Show a single delivery's full detail" }],
+  },
+  "schedule rotate-webhook": {
+    usage: "<id>",
+    summary: "Rotate a webhook task's secret URL token",
+    flags: [...SCHEDULE_ID_FLAG],
+  },
+  "schedule subscribe": { summary: "Stream scheduled-task changes as NDJSON", flags: [] },
 
   "terminal attach": {
     usage: "<thread-id>",
@@ -364,15 +422,19 @@ const ALIASES: Readonly<Record<string, string>> = {
   "thread input": "thread respond-input",
   "schedule rm": "schedule cancel",
   "schedule remove": "schedule cancel",
+  "schedule run-now": "schedule run",
+  "schedule watch": "schedule subscribe",
   "provider get": "provider credentials get",
   "provider set": "provider credentials set",
   "provider list": "models",
+  "provider reset": "provider reset-credit",
   "models credentials get": "provider credentials get",
   "models credentials set": "provider credentials set",
+  "usage refresh": "usage refresh-rates",
 };
 
 /** Roots whose second token is a subcommand rather than a positional. */
-export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal", "schedule"]);
+export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal", "schedule", "usage"]);
 
 export function commandKey(command: readonly string[]): string {
   const raw = command.join(" ");
@@ -446,9 +508,11 @@ Projects and models:
   project list|add|clone|update|delete
   models [--provider NAME]
 
-Provider credentials:
+Provider credentials and quota:
   provider credentials get [provider] [name]
   provider credentials set [provider] <name> <value> [--sensitive|--non-sensitive]
+  provider limits [--provider NAME]
+  provider reset-credit <provider>
 
 Threads:
   thread create|start|send|wait|watch|view|transcript|list
@@ -458,19 +522,24 @@ Terminals:
   terminal attach <thread-id> [--terminal-id ID] [--cwd PATH] [--env-var KEY=VALUE,...]
   terminal list|close <thread-id>
 
-Scheduled sends:
-  schedule add <thread-id> (--at TIME | --in DURATION) [--message TEXT] [--retry-until DURATION]
-  schedule list [--all]
-  schedule cancel <id>
-  schedule run [--interval DURATION] [--once]
+Scheduled tasks (server-side; no local runner):
+  schedule add [prompt] (--every DURATION | --at HH:MM [--weekdays DAYS] | --webhook)
+      [--project ID | --thread ID] [--title T] [--disabled] [--worktree ...]
+  schedule list
+  schedule enable|disable|cancel <id>
+  schedule run <id>            # fire once, now
+  schedule deliveries <id>     # webhook delivery log
+  schedule rotate-webhook <id>
+  schedule subscribe
+
+Usage and cost:
+  usage [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--timezone TZ] [--hourly]
+  usage refresh-rates
 
 Automation:
   Prompts may be positional, passed with --message/--prompt, or read from stdin.
-  --image <path> attaches an image file to thread start / thread send.
+  --image <path> attaches a file to thread start / thread send.
   --wait on start/send emits NDJSON lifecycle events and waits for completion.
-  Queue a resume for when a provider quota window resets:
-    t3ctl schedule add <thread-id> --in 5h --message "Resume the task" --retry-until 2h
-    t3ctl schedule run   # keep running (nohup/tmux/launchd) so due sends fire
 
 Worktrees:
   thread start --project P --message M --worktree [--base-branch B] [--from-origin] [--branch N]

@@ -272,61 +272,72 @@ t3ctl thread delete <thread-id>
 
 ---
 
-## Schedule Sends (`schedule`)
+## Scheduled Tasks (`schedule`)
 
-Queue a message for a thread now and let a scheduler process fire it later.
-The primary use case is resuming a thread when a provider quota window resets:
-the T3 server has no quota API, so scheduling lives client-side and "quota is
-back" is approximated by firing at a chosen time and optionally re-sending when
-the turn fails with a rate-limit error.
+Schedules run on the T3 Code server, not the CLI: there is no local queue and
+no runner process to keep alive. Each task launches a new thread or messages an
+existing one on its trigger.
 
-Scheduled sends live in `~/.config/t3code-cli/schedule.json` and only fire
-while `t3ctl schedule run` is running, so start it under `nohup`, tmux, or a
-service manager and leave it running.
+`schedule add` requires exactly one trigger:
 
-1. Queue a resume for when the quota window resets (5 hours out), retrying for
-   up to 2 more hours in case the reset time drifts:
+- `--every DURATION` — interval, minimum `1m` (`45m`, `2h30m`, `1d12h`).
+- `--at HH:MM` — a local wall-clock time, optionally `--weekdays 0,1,2`
+  (0=Sunday) or `--weekdays mon,tue,wed,fri`.
+- `--webhook` — fires on each request to the task's webhook URL.
+
+1. Launch a new thread on an interval in a project:
 ```sh
-t3ctl schedule add <thread-id> --in 5h --message "Resume the task" --retry-until 2h
+t3ctl schedule add --project my-project --every 1h --message "Check for new failures"
 ```
 
-2. Queue at a specific clock time instead:
+2. Message an existing thread on weekday mornings:
 ```sh
-t3ctl schedule add <thread-id> --at 2026-09-04T09:30 --message "Continue"
+t3ctl schedule add --thread <thread-id> --at 09:30 --weekdays mon,tue,wed,thu,fri --message "Standup summary"
 ```
 
-3. Start the scheduler (it fires due entries and keeps polling):
+3. Create it disabled, then enable it when ready:
 ```sh
-nohup t3ctl schedule run >/tmp/t3ctl-schedule.log 2>&1 &
+t3ctl schedule add --project my-project --every 1h --message "..." --disabled
+t3ctl schedule enable <id>
 ```
 
-4. Inspect and manage the queue:
+4. Inspect and manage:
 ```sh
-t3ctl schedule list            # pending entries
-t3ctl schedule list --all      # include sent/failed/cancelled
-t3ctl schedule cancel <id>     # unique id prefix works
+t3ctl schedule list                 # all tasks
+t3ctl schedule run <id>             # fire once, now
+t3ctl schedule deliveries <id>      # webhook delivery log
+t3ctl schedule rotate-webhook <id>  # rotate the secret URL token
+t3ctl schedule cancel <id>          # delete (unique id prefix works)
+t3ctl schedule subscribe            # stream changes as NDJSON
 ```
 
 Behavior notes:
 
-- `--at` takes an ISO time in the future; `--in` takes a duration (`45m`,
-  `2h30m`, `1d12h`). Exactly one is required. Model/mode flags
-  (`--provider`, `--model`, `--runtime-mode`, ...) are accepted like
-  `thread send` and replayed when the entry fires.
-- `--retry-until <duration>` opts into quota-aware retries: after the send,
-  the scheduler watches the turn and re-sends on rate-limit-looking failures
-  every `--retry-interval` (default 15m) until the deadline, then marks the
-  entry `failed`. Each retry appends a new user message to the thread.
-  Without it, the entry is marked `sent` once dispatched.
-- The destination environment (or server URL) is pinned when the entry is
-  added, so later `auth use` switches cannot misroute the send; credentials
-  are resolved fresh at fire time.
-- A crashed scheduler leaves entries that were mid-send in `running`; the
-  next `schedule run` re-arms them, so sends are at-least-once (a duplicate
-  resume message is harmless).
-- `t3ctl schedule run --once` fires everything currently due and exits, which
-  suits cron/systemd timers; it exits non-zero if any entry failed.
-- `t3ctl schedule add` alone does nothing until a runner fires the entry.
+- `--project` launches new threads; `--thread` messages an existing thread and
+  derives the project from it. Model/mode flags (`--provider`, `--model`,
+  `--runtime-mode`, ...) are accepted, as are the thread worktree flags
+  (`--worktree`, `--base-branch`, ...) when launching new threads.
+- The trigger is server state: tasks fire even when no CLI is running, and
+  survive across environments by ID.
+- `--id <id>` updates an existing task in place instead of creating one.
+- Trigger parse errors surface as `cli_parse_failed`; unknown/ambiguous ids as
+  `schedule_missing`/`schedule_ambiguous`.
+
+---
+
+## Usage and Quota (`usage`, `provider`)
+
+```sh
+t3ctl usage                       # token/cost buckets, last 7 days
+t3ctl usage --since 2026-09-01 --until 2026-09-30 --hourly
+t3ctl usage refresh-rates         # refresh the model price table
+t3ctl provider limits             # subscription windows (usedPercent, resetsAt) and reset credits
+t3ctl provider reset-credit codex_personal
+```
+
+`usage` reads `server.getUsageSummary`; `provider limits` reads the provider
+snapshots from `server.getConfig`, and `provider reset-credit` redeems a banked
+reset credit via `provider.consumeResetCredit`.
 
 ---
 
