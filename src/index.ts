@@ -23,6 +23,7 @@ import {
   pinThread,
   respondToApproval,
   respondToUserInput,
+  rollbackThread,
   searchThreads,
   sendMessage,
   setProviderCredential,
@@ -50,11 +51,17 @@ import {
 } from "./commands.js";
 import { ConfigError } from "./config.js";
 import { outputFormatFromArgv, createOutputSink, type OutputFormat } from "./output.js";
+import { acpAcceptUrlAuth, acpDeleteSession, acpDisableProvider, acpImportSession, acpLogout, acpPrepare, acpProviders, acpSearch, acpSessions, acpSetProvider, acpUninstall } from "./acp.js";
+import { attachDelete, attachUpload } from "./attachments.js";
 import { diffReview, diffThread, diffTurn } from "./diff.js";
 import { deviceAction, deviceClose, deviceConfigure, deviceDetail, deviceList, deviceOpen, deviceShutdown, deviceTestHost } from "./device.js";
 import { fileFind, fileList, fileRead, fileSearch, fileWrite } from "./files.js";
+import { previewClose, previewList, previewNavigate, previewOpen, previewRefresh, previewResize } from "./preview.js";
 import { prChecks, prComment, prDetail, prLinkedThreads, prList, prReview, prStack, prUpdate } from "./pullRequest.js";
+import { providerAuthCancel, providerAuthComplete, providerAuthLogout, providerAuthStart, providerInstallCancel, providerInstallRemove, providerInstallStart } from "./providerSetup.js";
 import { scheduleAdd, scheduleCancel, scheduleDeliveries, scheduleList, scheduleRotateWebhook, scheduleRunNow, scheduleSetEnabled, scheduleSubscribe } from "./schedule.js";
+import { answerSecret } from "./secret.js";
+import { serverBackgroundPolicy, serverHostResources, serverProbe, serverProcessHistory, serverProcesses, serverResourceHistory, serverRetryTelemetry, serverSignal, serverTrace } from "./server.js";
 import { sessionsImport, sessionsScan } from "./sessions.js";
 import { attachTerminal, closeTerminal, listTerminals } from "./terminal.js";
 import { consumeResetCredit, getUsage, listProviderLimits, refreshUsageRates } from "./usage.js";
@@ -145,6 +152,25 @@ function imageFlags(args: ParsedArgs): string[] {
 function flag(args: ParsedArgs, name: string): string | undefined {
   const value = args.flags.get(name);
   return typeof value === "string" ? value : undefined;
+}
+
+function repeatableFlag(args: ParsedArgs, name: string): string[] {
+  const values: string[] = [];
+  const prefix = `--${name}`;
+  for (let i = 0; i < args.rawArgv.length; i++) {
+    const token = args.rawArgv[i];
+    if (token === prefix || token.startsWith(`${prefix}=`)) {
+      let val = "";
+      if (token.startsWith(`${prefix}=`)) {
+        val = token.slice(prefix.length + 1);
+      } else if (i + 1 < args.rawArgv.length && !args.rawArgv[i + 1].startsWith("-")) {
+        val = args.rawArgv[i + 1];
+        i++;
+      }
+      if (val) values.push(val);
+    }
+  }
+  return values;
 }
 
 function boolFlag(args: ParsedArgs, name: string): boolean {
@@ -259,15 +285,21 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
     process.stdout.write("0.2.0\n");
     return 0;
   }
+  // Some commands have a two-token subcommand (`provider auth start`), which
+  // parseArgs leaves as a positional. Resolve it so help and flag validation
+  // target the specific command.
+  const resolved = [root, subcommand].filter(Boolean) as string[];
+  const commandTokens = resolved.length === 2 && !specFor(resolved) && args.positionals.length > 0 && specFor([...resolved, args.positionals[0]])
+    ? [...resolved, args.positionals[0]]
+    : resolved;
   // Help resolves against the specific command when there is one, so
   // `t3ctl thread start --help` documents thread start rather than everything.
   if (!root || boolFlag(args, "help")) {
-    const resolved = root ? [root, subcommand].filter(Boolean) as string[] : [];
-    const text = resolved.length > 0 && specFor(resolved) ? commandHelp(resolved) : topLevelHelp();
+    const text = commandTokens.length > 0 && specFor(commandTokens) ? commandHelp(commandTokens) : topLevelHelp();
     process.stdout.write(`${text}\n`);
     return 0;
   }
-  assertKnownFlags([root, subcommand].filter(Boolean) as string[], args.flags.keys());
+  assertKnownFlags(commandTokens, args.flags.keys());
 
   if (root === "auth") {
     if (subcommand === "pair") {
@@ -369,7 +401,24 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       await consumeResetCredit({ ...context, provider: required(args, "provider", args.positionals[0]) });
       return 0;
     }
-    throw new ConfigError("Unknown provider command. Use provider credentials get|set, provider limits, or provider reset-credit.", "cli_parse_failed");
+    if (subcommand === "auth") {
+      const action = args.positionals[0];
+      const instanceId = required(args, "instance", flag(args, "instance") || flag(args, "provider") || args.positionals[1]);
+      if (action === "start") { await providerAuthStart({ ...context, instanceId, methodId: flag(args, "method-id"), returnUrl: flag(args, "return-url") }); return 0; }
+      if (action === "complete") { await providerAuthComplete({ ...context, instanceId, flowId: required(args, "flow-id"), callbackUrl: required(args, "callback-url") }); return 0; }
+      if (action === "cancel") { await providerAuthCancel({ ...context, instanceId, flowId: required(args, "flow-id") }); return 0; }
+      if (action === "logout") { await providerAuthLogout({ ...context, instanceId }); return 0; }
+      throw new ConfigError("Unknown provider auth command. Use provider auth start, complete, cancel, or logout.", "cli_parse_failed");
+    }
+    if (subcommand === "install") {
+      const action = args.positionals[0];
+      const instanceId = required(args, "instance", flag(args, "instance") || flag(args, "provider") || args.positionals[1]);
+      if (action === "start") { await providerInstallStart({ ...context, instanceId }); return 0; }
+      if (action === "cancel") { await providerInstallCancel({ ...context, instanceId, operationId: required(args, "operation-id") }); return 0; }
+      if (action === "remove") { await providerInstallRemove({ ...context, instanceId }); return 0; }
+      throw new ConfigError("Unknown provider install command. Use provider install start, cancel, or remove.", "cli_parse_failed");
+    }
+    throw new ConfigError("Unknown provider command. Use provider credentials get|set, provider limits, provider reset-credit, provider auth, or provider install.", "cli_parse_failed");
   }
   if (root === "status") {
     await listModels(context);
@@ -470,6 +519,11 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
     if (subcommand === "visit") {
       if (!threadId) throw new ConfigError("thread visit requires a thread ID.", "thread_missing");
       await visitThread({ ...context, threadId });
+      return 0;
+    }
+    if (subcommand === "rollback") {
+      if (!threadId) throw new ConfigError("thread rollback requires a thread ID.", "thread_missing");
+      await rollbackThread({ ...context, threadId, scopeId: required(args, "scope-id"), checkpointId: required(args, "checkpoint-id"), restoreFiles: !boolFlag(args, "no-restore-files") });
       return 0;
     }
     throw new ConfigError("Unknown thread command.", "cli_parse_failed");
@@ -648,6 +702,67 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
     if (subcommand === "review") { await prReview({ ...context, ...prTarget, verdict: required(args, "verdict"), body: flag(args, "body") }); return 0; }
     if (subcommand === "update") { await prUpdate({ ...context, ...prTarget, title: flag(args, "title"), body: flag(args, "body") }); return 0; }
     throw new ConfigError("Unknown pr command. Use pr list, detail, checks, stack, threads, comment, review, or update.", "cli_parse_failed");
+  }
+  if (root === "preview") {
+    const threadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID || args.positionals[0];
+    if (!threadId) throw new ConfigError("preview commands require a thread ID.", "thread_missing");
+    if (subcommand === "list" || !subcommand) { await previewList({ ...context, threadId }); return 0; }
+    if (subcommand === "open") { await previewOpen({ ...context, threadId, url: flag(args, "url"), width: flag(args, "width"), height: flag(args, "height"), profileId: flag(args, "profile-id") }); return 0; }
+    if (subcommand === "navigate") { await previewNavigate({ ...context, threadId, tabId: required(args, "tab-id"), url: required(args, "url") }); return 0; }
+    if (subcommand === "resize") { await previewResize({ ...context, threadId, tabId: required(args, "tab-id"), width: flag(args, "width"), height: flag(args, "height") }); return 0; }
+    if (subcommand === "refresh") { await previewRefresh({ ...context, threadId, tabId: required(args, "tab-id") }); return 0; }
+    if (subcommand === "close") { await previewClose({ ...context, threadId, tabId: flag(args, "tab-id") }); return 0; }
+    throw new ConfigError("Unknown preview command. Use preview list, open, navigate, resize, refresh, or close.", "cli_parse_failed");
+  }
+  if (root === "attach") {
+    if (subcommand === "upload" || !subcommand) {
+      const paths = [...args.positionals, ...repeatableFlag(args, "file")];
+      if (paths.length === 0) throw new ConfigError("attach upload requires at least one file path.", "cli_parse_failed");
+      await attachUpload({ ...context, paths });
+      return 0;
+    }
+    if (subcommand === "delete" || subcommand === "rm" || subcommand === "remove") {
+      await attachDelete({ ...context, attachmentId: required(args, "attachment-id", args.positionals[0]) });
+      return 0;
+    }
+    throw new ConfigError("Unknown attach command. Use attach upload or attach delete.", "cli_parse_failed");
+  }
+  if (root === "acp") {
+    const instanceId = flag(args, "instance") || flag(args, "provider");
+    const projectId = flag(args, "project") || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID;
+    if (subcommand === "search") { await acpSearch({ ...context, query: flag(args, "query") || args.positionals[0] || "" }); return 0; }
+    if (subcommand === "prepare") { await acpPrepare({ ...context, agentId: required(args, "agent-id", args.positionals[0]) }); return 0; }
+    if (subcommand === "uninstall") { await acpUninstall({ ...context, agentId: required(args, "agent-id", args.positionals[0]) }); return 0; }
+    if (subcommand === "logout") { await acpLogout({ ...context, instanceId: required(args, "instance", instanceId) }); return 0; }
+    if (subcommand === "accept-url-auth") { await acpAcceptUrlAuth({ ...context, instanceId: required(args, "instance", instanceId), elicitationId: required(args, "elicitation-id") }); return 0; }
+    if (subcommand === "sessions") { await acpSessions({ ...context, instanceId: required(args, "instance", instanceId), projectId: required(args, "project", projectId), cursor: flag(args, "cursor") }); return 0; }
+    if (subcommand === "import-session") { await acpImportSession({ ...context, instanceId: required(args, "instance", instanceId), projectId: required(args, "project", projectId), sessionId: required(args, "session-id"), title: flag(args, "title") }); return 0; }
+    if (subcommand === "delete-session") { await acpDeleteSession({ ...context, instanceId: required(args, "instance", instanceId), projectId: required(args, "project", projectId), sessionId: required(args, "session-id") }); return 0; }
+    if (subcommand === "providers") { await acpProviders({ ...context, instanceId: required(args, "instance", instanceId), projectId: required(args, "project", projectId) }); return 0; }
+    if (subcommand === "set-provider") { await acpSetProvider({ ...context, instanceId: required(args, "instance", instanceId), projectId: required(args, "project", projectId), providerId: required(args, "provider-id"), apiType: required(args, "api-type"), baseUrl: required(args, "base-url"), headers: repeatableFlag(args, "header") }); return 0; }
+    if (subcommand === "disable-provider") { await acpDisableProvider({ ...context, instanceId: required(args, "instance", instanceId), projectId: required(args, "project", projectId), providerId: required(args, "provider-id") }); return 0; }
+    throw new ConfigError("Unknown acp command.", "cli_parse_failed");
+  }
+  if (root === "server") {
+    if (subcommand === "probe" || !subcommand) { await serverProbe(context); return 0; }
+    if (subcommand === "trace") { await serverTrace(context); return 0; }
+    if (subcommand === "processes") { await serverProcesses(context); return 0; }
+    if (subcommand === "process-history") { await serverProcessHistory({ ...context, window: flag(args, "window"), bucket: flag(args, "bucket") }); return 0; }
+    if (subcommand === "host-resources") { await serverHostResources(context); return 0; }
+    if (subcommand === "resource-history") { await serverResourceHistory({ ...context, window: flag(args, "window"), bucket: flag(args, "bucket") }); return 0; }
+    if (subcommand === "retry-telemetry") { await serverRetryTelemetry(context); return 0; }
+    if (subcommand === "signal") { await serverSignal({ ...context, pid: required(args, "pid", args.positionals[0]), startTime: flag(args, "start-time"), signal: required(args, "signal") }); return 0; }
+    if (subcommand === "background-policy") { await serverBackgroundPolicy(context); return 0; }
+    throw new ConfigError("Unknown server command.", "cli_parse_failed");
+  }
+  if (root === "secret") {
+    if (subcommand === "answer") {
+      const threadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID || args.positionals[0];
+      if (!threadId) throw new ConfigError("secret answer requires a thread ID.", "thread_missing");
+      await answerSecret({ ...context, threadId, turnItemId: required(args, "turn-item-id"), secret: flag(args, "secret"), decline: boolFlag(args, "decline") });
+      return 0;
+    }
+    throw new ConfigError("Unknown secret command. Use secret answer.", "cli_parse_failed");
   }
   if (root === "connect") {
     // Clean-break alias retained as a discoverable migration path.

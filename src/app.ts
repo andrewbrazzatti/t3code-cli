@@ -684,7 +684,7 @@ function getMimeType(filePath: string): string {
  * attachment by id on the message. V2 commands no longer accept inline data
  * URLs, so images and files both go through the same two steps.
  */
-const uploadAttachments = (
+export const uploadAttachments = (
   client: any,
   target: { readonly httpBaseUrl: string; readonly token?: string },
   paths?: ReadonlyArray<string>,
@@ -1009,6 +1009,19 @@ export async function unsettleThread(options: CommandContext & { readonly thread
 export async function pinThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.pin", {}); }
 export async function unpinThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.unpin", {}); }
 export async function visitThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.visit", { visitedAt: new Date().toISOString() }); }
+
+export async function rollbackThread(options: CommandContext & {
+  readonly threadId: string;
+  readonly scopeId: string;
+  readonly checkpointId: string;
+  readonly restoreFiles?: boolean;
+}): Promise<unknown> {
+  return dispatchThreadCommand(options, "checkpoint.rollback", {
+    scopeId: options.scopeId,
+    checkpointId: options.checkpointId,
+    ...(options.restoreFiles === false ? {} : { restoreFiles: true }),
+  });
+}
 
 export async function searchThreads(options: CommandContext & { readonly query: string; readonly limit?: number }): Promise<unknown> {
   const { sink } = commandContext(options);

@@ -85,6 +85,14 @@ diff turn | thread | review
 device list | open | close | shutdown | detail | configure | test-host | action
 sessions scan | import
 pr list | detail | checks | stack | threads | comment | review | update
+preview list | open | navigate | resize | refresh | close
+attach upload | delete
+acp search | prepare | uninstall | logout | sessions | import-session | delete-session | providers | set-provider | disable-provider
+server probe | trace | processes | process-history | host-resources | resource-history | retry-telemetry | signal | background-policy
+secret answer
+provider auth start | complete | cancel | logout
+provider install start | cancel | remove
+thread rollback
 ```
 
 Thread creation and updates support `--provider`, `--model`, `--runtime-mode`, `--interaction-mode`, and provider options such as `--option effort=max` or `--effort high`. Project and thread selectors accept IDs, titles, and workspace-root names where applicable.
@@ -149,6 +157,30 @@ t3ctl pr detail pingdotgg/t3code#123 --project my-project
 ```
 
 Device commands drive iOS simulators and Android emulators on this host or on SSH device hosts, scoped to a thread. `sessions` imports existing Claude Code / Codex history. `pr` lists and acts on GitHub/Bitbucket change requests; identify one with `owner/name#N` or `--repository`/`--number`.
+
+## Preview, attachments, and secrets
+
+```sh
+t3ctl preview list <thread-id>
+t3ctl preview open <thread-id> --url http://localhost:5173 --width 1280 --height 800
+t3ctl preview navigate <thread-id> --tab-id tab-1 --url http://localhost:5173/settings
+t3ctl preview close <thread-id> --tab-id tab-1
+t3ctl attach upload ./diagram.pdf              # prints persisted attachment ids
+t3ctl attach delete <attachment-id>
+t3ctl secret answer <thread-id> --turn-item-id item-1 --secret "$TOKEN"
+```
+
+## Provider setup, ACP registry, and diagnostics
+
+```sh
+t3ctl provider auth logout codex_personal
+t3ctl provider install start codex_personal
+t3ctl acp search claude
+t3ctl acp providers <instance-id> --project my-project
+t3ctl server host-resources
+t3ctl server process-history --window 1h --bucket 5m
+t3ctl server trace
+```
 
 ## Verification
 

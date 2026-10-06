@@ -265,6 +265,27 @@ test("phase-3 command families accept their flags and are documented", async () 
   assert.match(commandHelp(["diff", "review"]), /--base-ref/);
 });
 
+test("phase-4 command families accept their flags and are documented", async () => {
+  const { assertKnownFlags } = await import("../dist/index.js");
+  assert.doesNotThrow(() => assertKnownFlags(["thread", "rollback"], ["thread", "scope-id", "checkpoint-id", "no-restore-files"]));
+  assert.doesNotThrow(() => assertKnownFlags(["preview", "open"], ["thread", "url", "width", "height", "profile-id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["preview", "navigate"], ["thread", "tab-id", "url"]));
+  assert.doesNotThrow(() => assertKnownFlags(["attach", "upload"], ["file"]));
+  assert.doesNotThrow(() => assertKnownFlags(["acp", "set-provider"], ["instance", "project", "provider-id", "api-type", "base-url", "header"]));
+  assert.doesNotThrow(() => assertKnownFlags(["server", "process-history"], ["window", "bucket"]));
+  assert.doesNotThrow(() => assertKnownFlags(["server", "signal"], ["pid", "start-time", "signal"]));
+  assert.doesNotThrow(() => assertKnownFlags(["secret", "answer"], ["thread", "turn-item-id", "secret", "decline"]));
+  assert.doesNotThrow(() => assertKnownFlags(["provider", "auth", "start"], ["instance", "method-id", "return-url"]));
+  assert.doesNotThrow(() => assertKnownFlags(["provider", "install", "cancel"], ["instance", "operation-id"]));
+  assert.throws(() => assertKnownFlags(["preview", "open"], ["tab-id"]), /Unknown flag "--tab-id"/);
+
+  const { commandHelp } = await import("../dist/commands.js");
+  assert.match(commandHelp(["preview", "navigate"]), /--tab-id/);
+  assert.match(commandHelp(["server", "signal"]), /--signal/);
+  assert.match(commandHelp(["secret", "answer"]), /--decline/);
+  assert.match(commandHelp(["provider", "auth", "start"]), /--method-id/);
+});
+
 test("ChatAttachment deserializes file, image, and unknown attachment variants", async () => {
   const { Schema } = await import("effect");
   const { ChatAttachment } = await import("@t3tools/contracts");

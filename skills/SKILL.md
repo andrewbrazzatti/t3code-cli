@@ -410,6 +410,90 @@ t3ctl pr update  <ref> --project my-project --title "New title"
 
 ---
 
+## Preview Tabs (`preview`)
+
+Preview sessions are thread-scoped browser tabs.
+
+```sh
+t3ctl preview list <thread-id>
+t3ctl preview open <thread-id> [--url URL] [--width PX --height PX]
+t3ctl preview navigate <thread-id> --tab-id ID --url URL
+t3ctl preview resize <thread-id> --tab-id ID --width PX --height PX
+t3ctl preview refresh <thread-id> --tab-id ID
+t3ctl preview close <thread-id> [--tab-id ID]   # omit tab to close all
+```
+
+## Attachments (`attach`)
+
+```sh
+t3ctl attach upload ./diagram.pdf ./notes.txt   # prints persisted attachment ids
+t3ctl attach delete <attachment-id>
+```
+
+Uploads use the same signed-URL flow as `--image` on `thread start`/`send`.
+
+## Secrets (`secret`)
+
+Answer an agent's secret request. `--secret` saves a value the server keeps
+under a one-use reference; `--decline` refuses.
+
+```sh
+t3ctl secret answer <thread-id> --turn-item-id item-1 --secret "$TOKEN"
+t3ctl secret answer <thread-id> --turn-item-id item-1 --decline
+```
+
+## Provider Setup (`provider auth`, `provider install`)
+
+```sh
+t3ctl provider auth start <instance-id> [--method-id ID] [--return-url URL]
+t3ctl provider auth complete <instance-id> --flow-id ID --callback-url URL
+t3ctl provider auth cancel <instance-id> --flow-id ID
+t3ctl provider auth logout <instance-id>
+t3ctl provider install start <instance-id>
+t3ctl provider install cancel <instance-id> --operation-id ID
+t3ctl provider install remove <instance-id>
+```
+
+These are the non-interactive steps; interactive prompts are driven by the apps.
+
+## ACP Registry (`acp`)
+
+```sh
+t3ctl acp search <query>
+t3ctl acp prepare <agent-id>            # install a registry agent
+t3ctl acp uninstall <agent-id>
+t3ctl acp providers <instance-id> --project P
+t3ctl acp sessions <instance-id> --project P [--cursor C]
+t3ctl acp import-session <instance-id> --project P --session-id S [--title T]
+t3ctl acp delete-session <instance-id> --project P --session-id S
+t3ctl acp set-provider <instance-id> --project P --provider-id ID --api-type T --base-url URL [--header K=V]
+t3ctl acp disable-provider <instance-id> --project P --provider-id ID
+t3ctl acp logout <instance-id>
+t3ctl acp accept-url-auth <instance-id> --elicitation-id ID
+```
+
+## Thread Checkpoints (`thread rollback`)
+
+```sh
+t3ctl thread rollback <thread-id> --scope-id S --checkpoint-id C [--no-restore-files]
+```
+
+## Server Diagnostics (`server`)
+
+```sh
+t3ctl server probe
+t3ctl server host-resources
+t3ctl server trace
+t3ctl server processes
+t3ctl server process-history --window 1h --bucket 5m
+t3ctl server resource-history --window 1h --bucket 5m
+t3ctl server retry-telemetry
+t3ctl server signal <pid> --signal SIGTERM [--start-time MS]
+t3ctl server background-policy
+```
+
+---
+
 ## Automation Examples
 
 ### Shell Script Example

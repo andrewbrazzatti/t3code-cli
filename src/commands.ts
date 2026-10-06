@@ -113,6 +113,12 @@ const PR_TARGET_FLAGS: readonly FlagSpec[] = [
   { name: "reference", arg: "REF", description: "owner/name#N or a pull-request URL (may also be positional)" },
 ];
 
+/** Selects a provider instance for setup and ACP commands. */
+const INSTANCE_FLAGS: readonly FlagSpec[] = [
+  { name: "instance", arg: "ID", description: "Provider instance ID (may also be positional)" },
+  { name: "provider", arg: "ID", description: "Alias of --instance", hidden: true },
+];
+
 /**
  * Keyed by `"<root> <subcommand>"`, or just `"<root>"` for commands without
  * subcommands. Aliases share a spec so `project rename` validates like
@@ -210,6 +216,29 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       { name: "instance-id", arg: "ID", description: "Alias of --provider", hidden: true },
     ],
   },
+  "provider auth start": {
+    usage: "<instance-id>",
+    summary: "Begin a provider authentication flow",
+    flags: [...INSTANCE_FLAGS, { name: "method-id", arg: "ID", description: "Auth method ID" }, { name: "return-url", arg: "URL", description: "URL to return to after auth" }],
+  },
+  "provider auth complete": {
+    usage: "<instance-id>",
+    summary: "Complete a provider authentication flow with a callback URL",
+    flags: [...INSTANCE_FLAGS, { name: "flow-id", arg: "ID", description: "Flow ID (required)" }, { name: "callback-url", arg: "URL", description: "OAuth callback URL (required)" }],
+  },
+  "provider auth cancel": {
+    usage: "<instance-id>",
+    summary: "Cancel a provider authentication flow",
+    flags: [...INSTANCE_FLAGS, { name: "flow-id", arg: "ID", description: "Flow ID (required)" }],
+  },
+  "provider auth logout": { usage: "<instance-id>", summary: "Log out of a provider instance", flags: [...INSTANCE_FLAGS] },
+  "provider install start": { usage: "<instance-id>", summary: "Install a provider's managed binary", flags: [...INSTANCE_FLAGS] },
+  "provider install cancel": {
+    usage: "<instance-id>",
+    summary: "Cancel an in-progress provider install",
+    flags: [...INSTANCE_FLAGS, { name: "operation-id", arg: "ID", description: "Install operation ID (required)" }],
+  },
+  "provider install remove": { usage: "<instance-id>", summary: "Remove a provider's managed binary", flags: [...INSTANCE_FLAGS] },
 
   usage: {
     summary: "Show token and cost usage over a date range",
@@ -360,6 +389,16 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   "thread pin": { usage: "<thread-id>", summary: "Pin a thread to the top of the list", flags: [...THREAD_ID_FLAGS] },
   "thread unpin": { usage: "<thread-id>", summary: "Unpin a thread", flags: [...THREAD_ID_FLAGS] },
   "thread visit": { usage: "<thread-id>", summary: "Mark a thread as read up to now", flags: [...THREAD_ID_FLAGS] },
+  "thread rollback": {
+    usage: "<thread-id>",
+    summary: "Roll a thread back to a checkpoint",
+    flags: [
+      ...THREAD_ID_FLAGS,
+      { name: "scope-id", arg: "ID", description: "Checkpoint scope ID (required)" },
+      { name: "checkpoint-id", arg: "ID", description: "Checkpoint ID (required)" },
+      { name: "no-restore-files", description: "Roll back the conversation only, not files" },
+    ],
+  },
 
   "schedule add": {
     usage: "[prompt]",
@@ -594,6 +633,56 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     flags: [...PR_TARGET_FLAGS, { name: "title", arg: "TITLE", description: "New title" }, { name: "body", arg: "TEXT", description: "New body" }],
   },
 
+  "preview list": { usage: "<thread-id>", summary: "List a thread's preview tabs", flags: [...THREAD_ID_FLAGS] },
+  "preview open": {
+    usage: "<thread-id>",
+    summary: "Open a preview tab for a thread",
+    flags: [...THREAD_ID_FLAGS, { name: "url", arg: "URL", description: "Initial URL (omit for a blank tab)" }, { name: "width", arg: "PX", description: "Freeform viewport width" }, { name: "height", arg: "PX", description: "Freeform viewport height" }, { name: "profile-id", arg: "ID", description: "Browser profile ID" }],
+  },
+  "preview navigate": { usage: "<thread-id>", summary: "Navigate a preview tab", flags: [...THREAD_ID_FLAGS, { name: "tab-id", arg: "ID", description: "Preview tab ID (required)" }, { name: "url", arg: "URL", description: "URL to open (required)" }] },
+  "preview resize": { usage: "<thread-id>", summary: "Resize a preview tab's viewport", flags: [...THREAD_ID_FLAGS, { name: "tab-id", arg: "ID", description: "Preview tab ID (required)" }, { name: "width", arg: "PX", description: "Viewport width" }, { name: "height", arg: "PX", description: "Viewport height" }] },
+  "preview refresh": { usage: "<thread-id>", summary: "Reload a preview tab", flags: [...THREAD_ID_FLAGS, { name: "tab-id", arg: "ID", description: "Preview tab ID (required)" }] },
+  "preview close": { usage: "<thread-id>", summary: "Close a preview tab (or all of a thread's tabs)", flags: [...THREAD_ID_FLAGS, { name: "tab-id", arg: "ID", description: "Preview tab ID (default: all)" }] },
+
+  "attach upload": {
+    usage: "<path>...",
+    summary: "Upload files as chat attachments and print their ids",
+    flags: [{ name: "file", arg: "PATH", description: "File to upload (repeatable); paths may also be positional" }],
+  },
+  "attach delete": {
+    usage: "<attachment-id>",
+    summary: "Delete a pending attachment upload",
+    flags: [{ name: "attachment-id", arg: "ID", description: "Attachment ID (may also be positional)" }],
+  },
+
+  "acp search": { usage: "<query>", summary: "Search the Agent Client Protocol registry", flags: [{ name: "query", arg: "TEXT", description: "Search text (may also be positional)" }] },
+  "acp prepare": { usage: "<agent-id>", summary: "Prepare (install) a registry agent", flags: [{ name: "agent-id", arg: "ID", description: "Registry agent ID (may also be positional)" }] },
+  "acp uninstall": { usage: "<agent-id>", summary: "Uninstall a managed registry agent binary", flags: [{ name: "agent-id", arg: "ID", description: "Registry agent ID (may also be positional)" }] },
+  "acp logout": { usage: "<instance-id>", summary: "Log out of an ACP provider instance", flags: [...INSTANCE_FLAGS] },
+  "acp accept-url-auth": { usage: "<instance-id>", summary: "Accept a URL-auth elicitation", flags: [...INSTANCE_FLAGS, { name: "elicitation-id", arg: "ID", description: "Elicitation ID (required)" }] },
+  "acp sessions": { usage: "<instance-id>", summary: "List an ACP provider's sessions for a project", flags: [...INSTANCE_FLAGS, { name: "project", arg: "ID", description: "Project ID (required)" }, { name: "cursor", arg: "CURSOR", description: "Pagination cursor" }] },
+  "acp import-session": { usage: "<instance-id>", summary: "Import an ACP provider session as a thread", flags: [...INSTANCE_FLAGS, { name: "project", arg: "ID", description: "Project ID (required)" }, { name: "session-id", arg: "ID", description: "Session ID (required)" }, { name: "title", arg: "TITLE", description: "Thread title" }] },
+  "acp delete-session": { usage: "<instance-id>", summary: "Delete an ACP provider session", flags: [...INSTANCE_FLAGS, { name: "project", arg: "ID", description: "Project ID (required)" }, { name: "session-id", arg: "ID", description: "Session ID (required)" }] },
+  "acp providers": { usage: "<instance-id>", summary: "List an ACP provider instance's providers", flags: [...INSTANCE_FLAGS, { name: "project", arg: "ID", description: "Project ID (required)" }] },
+  "acp set-provider": { usage: "<instance-id>", summary: "Create or update an ACP provider", flags: [...INSTANCE_FLAGS, { name: "project", arg: "ID", description: "Project ID (required)" }, { name: "provider-id", arg: "ID", description: "Provider ID (required)" }, { name: "api-type", arg: "TYPE", description: "Provider protocol (required)" }, { name: "base-url", arg: "URL", description: "Base URL (required)" }, { name: "header", arg: "KEY=VALUE", description: "Request header; repeatable" }] },
+  "acp disable-provider": { usage: "<instance-id>", summary: "Disable an ACP provider", flags: [...INSTANCE_FLAGS, { name: "project", arg: "ID", description: "Project ID (required)" }, { name: "provider-id", arg: "ID", description: "Provider ID (required)" }] },
+
+  "server probe": { summary: "Check that the server answers", flags: [] },
+  "server trace": { summary: "Show server trace diagnostics", flags: [] },
+  "server processes": { summary: "Show server process diagnostics", flags: [] },
+  "server process-history": { summary: "Show process resource history", flags: [{ name: "window", arg: "DURATION", description: "Window length, e.g. 1h (required)" }, { name: "bucket", arg: "DURATION", description: "Bucket size, e.g. 1m (required)" }] },
+  "server host-resources": { summary: "Show host resource usage", flags: [] },
+  "server resource-history": { summary: "Show resource telemetry history", flags: [{ name: "window", arg: "DURATION", description: "Window length, e.g. 1h (required)" }, { name: "bucket", arg: "DURATION", description: "Bucket size, e.g. 1m (required)" }] },
+  "server retry-telemetry": { summary: "Retry resource telemetry", flags: [] },
+  "server signal": { usage: "<pid>", summary: "Send a signal to a server process", flags: [{ name: "pid", arg: "N", description: "Process ID (may also be positional)" }, { name: "start-time", arg: "MS", description: "Process start time in ms" }, { name: "signal", arg: "NAME", description: "Signal name (required)" }] },
+  "server background-policy": { summary: "Show the background activity policy", flags: [] },
+
+  "secret answer": {
+    usage: "<thread-id>",
+    summary: "Answer an agent's secret request (save or decline)",
+    flags: [...THREAD_ID_FLAGS, { name: "turn-item-id", arg: "ID", description: "Turn item ID (required)" }, { name: "secret", arg: "VALUE", description: "Secret value to save" }, { name: "decline", description: "Decline the request" }],
+  },
+
   "connect": {
     usage: "<pairing-url>",
     summary: "Alias of `auth pair`, kept as a migration path",
@@ -637,7 +726,7 @@ const ALIASES: Readonly<Record<string, string>> = {
 };
 
 /** Roots whose second token is a subcommand rather than a positional. */
-export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal", "schedule", "usage", "file", "sessions", "diff", "device", "pr"]);
+export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal", "schedule", "usage", "file", "sessions", "diff", "device", "pr", "preview", "attach", "acp", "server", "secret"]);
 
 export function commandKey(command: readonly string[]): string {
   const raw = command.join(" ");
@@ -756,6 +845,19 @@ Agent session import:
 Pull requests:
   pr list [--state open|closed|merged|all] [--involvement authored|reviewing|all]
   pr detail|checks|stack|threads|comment|review|update [owner/name#N] --project ID
+
+Preview tabs, attachments, and secrets:
+  preview list|open|navigate|resize|refresh|close <thread-id>
+  attach upload <path>... | attach delete <attachment-id>
+  secret answer <thread-id> --turn-item-id ID (--secret VALUE | --decline)
+
+Provider setup and ACP registry:
+  provider auth start|complete|cancel|logout <instance-id>
+  provider install start|cancel|remove <instance-id>
+  acp search|prepare|uninstall|logout|sessions|import-session|delete-session|providers|set-provider|disable-provider
+
+Server diagnostics:
+  server probe|trace|processes|host-resources|resource-history|process-history|retry-telemetry|signal|background-policy
 
 Automation:
   Prompts may be positional, passed with --message/--prompt, or read from stdin.
