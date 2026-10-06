@@ -49,6 +49,15 @@ const MODE_FLAGS: readonly FlagSpec[] = [
   { name: "interaction-mode", arg: "MODE", description: "Interaction mode for the thread" },
 ];
 
+/** Worktree selection shared by thread create and thread start. */
+const WORKTREE_FLAGS: readonly FlagSpec[] = [
+  { name: "worktree", description: "Create a fresh git worktree for the thread" },
+  { name: "worktree-path", arg: "PATH", description: "Attach an existing directory as the thread's worktree" },
+  { name: "base-branch", arg: "NAME", description: "Ref --worktree branches from (default: repo default branch)" },
+  { name: "branch", arg: "NAME", description: "Branch to create in the worktree (default: temporary t3code/<hex>)" },
+  { name: "from-origin", description: "Base --worktree on origin/<base-branch> (thread start only)" },
+];
+
 const THREAD_ID_FLAGS: readonly FlagSpec[] = [
   { name: "thread", arg: "ID", description: "Thread ID (may also be given positionally)" },
   { name: "thread-id", arg: "ID", description: "Alias of --thread", hidden: true },
@@ -59,6 +68,17 @@ const MESSAGE_FLAGS: readonly FlagSpec[] = [
   { name: "prompt", arg: "TEXT", description: "Alias of --message", hidden: true },
   { name: "image", arg: "PATH", description: "Attach an image; repeatable, or comma separated" },
   { name: "wait", description: "Emit NDJSON lifecycle events and wait for completion" },
+];
+
+/** Message flags for commands that queue a send for later, where --wait makes no sense. */
+const QUEUED_MESSAGE_FLAGS: readonly FlagSpec[] = MESSAGE_FLAGS.filter((flag) => flag.name !== "wait");
+
+/** Scheduling flags shared by `schedule add`. */
+const SCHEDULE_WHEN_FLAGS: readonly FlagSpec[] = [
+  { name: "at", arg: "TIME", description: "Send at an ISO time in the future (e.g. 2026-09-03T18:00). Mutually exclusive with --in" },
+  { name: "in", arg: "DURATION", description: "Send after a duration (e.g. 45m, 2h30m, 1d12h). Mutually exclusive with --at" },
+  { name: "retry-until", arg: "DURATION", description: "Keep re-sending while turns fail with a rate-limit error, until this long after the scheduled time" },
+  { name: "retry-interval", arg: "DURATION", description: "Delay between rate-limit retries (default: 15m)" },
 ];
 
 /**
@@ -194,6 +214,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       { name: "title", arg: "TITLE", description: "Thread title (required)" },
       ...MODEL_FLAGS,
       ...MODE_FLAGS,
+      ...WORKTREE_FLAGS,
     ],
   },
   "thread start": {
@@ -206,6 +227,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       ...MESSAGE_FLAGS,
       ...MODEL_FLAGS,
       ...MODE_FLAGS,
+      ...WORKTREE_FLAGS,
     ],
   },
   "thread send": {
@@ -259,6 +281,28 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       ...THREAD_ID_FLAGS,
       { name: "request-id", arg: "ID", description: "Input request ID (required)" },
       { name: "answers", arg: "JSON", description: "JSON object of answers (required)" },
+    ],
+  },
+
+  "schedule add": {
+    usage: "<thread-id> [prompt]",
+    summary: "Queue a message to send to a thread at a future time (requires `schedule run`)",
+    flags: [...THREAD_ID_FLAGS, ...QUEUED_MESSAGE_FLAGS, ...MODEL_FLAGS, ...MODE_FLAGS, ...SCHEDULE_WHEN_FLAGS],
+  },
+  "schedule list": {
+    summary: "List scheduled sends",
+    flags: [{ name: "all", description: "Include sent, failed, and cancelled entries" }],
+  },
+  "schedule cancel": {
+    usage: "<id>",
+    summary: "Cancel a scheduled send before it fires",
+    flags: [{ name: "id", arg: "ID", description: "Schedule ID (may also be given positionally)" }],
+  },
+  "schedule run": {
+    summary: "Run the scheduler loop that fires due scheduled sends",
+    flags: [
+      { name: "interval", arg: "DURATION", description: "Poll interval between due-entry checks (default: 15s)" },
+      { name: "once", description: "Fire entries currently due, then exit (cron-friendly)" },
     ],
   },
 
@@ -318,6 +362,8 @@ const ALIASES: Readonly<Record<string, string>> = {
   "project rename": "project update",
   "project remove": "project delete",
   "thread input": "thread respond-input",
+  "schedule rm": "schedule cancel",
+  "schedule remove": "schedule cancel",
   "provider get": "provider credentials get",
   "provider set": "provider credentials set",
   "provider list": "models",
@@ -326,7 +372,7 @@ const ALIASES: Readonly<Record<string, string>> = {
 };
 
 /** Roots whose second token is a subcommand rather than a positional. */
-export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal"]);
+export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal", "schedule"]);
 
 export function commandKey(command: readonly string[]): string {
   const raw = command.join(" ");
@@ -412,8 +458,21 @@ Terminals:
   terminal attach <thread-id> [--terminal-id ID] [--cwd PATH] [--env-var KEY=VALUE,...]
   terminal list|close <thread-id>
 
+Scheduled sends:
+  schedule add <thread-id> (--at TIME | --in DURATION) [--message TEXT] [--retry-until DURATION]
+  schedule list [--all]
+  schedule cancel <id>
+  schedule run [--interval DURATION] [--once]
+
 Automation:
   Prompts may be positional, passed with --message/--prompt, or read from stdin.
   --image <path> attaches an image file to thread start / thread send.
-  --wait on start/send emits NDJSON lifecycle events and waits for completion.`;
+  --wait on start/send emits NDJSON lifecycle events and waits for completion.
+  Queue a resume for when a provider quota window resets:
+    t3ctl schedule add <thread-id> --in 5h --message "Resume the task" --retry-until 2h
+    t3ctl schedule run   # keep running (nohup/tmux/launchd) so due sends fire
+
+Worktrees:
+  thread start --project P --message M --worktree [--base-branch B] [--from-origin] [--branch N]
+  --worktree-path PATH attaches an existing directory as the thread's worktree.`;
 }

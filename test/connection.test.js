@@ -9,7 +9,12 @@ test("target resolution normalizes HTTP/WS URLs and keeps secrets out of config"
   const { resolveTarget } = await import("../dist/connection.js");
   const target = resolveTarget({ serverUrl: "wss://example.test/path?x=1", token: "access-token" });
   assert.equal(target.httpBaseUrl, "https://example.test/");
-  assert.equal(target.socketUrl, "wss://example.test/ws?token=access-token");
+  const socket = new URL(target.socketUrl);
+  assert.equal(socket.protocol, "wss:");
+  assert.equal(socket.host, "example.test");
+  assert.equal(socket.pathname, "/ws");
+  assert.equal(socket.searchParams.get("token"), "access-token");
+  assert.equal(socket.searchParams.get("orchestrationProtocol"), "2");
   assert.equal(target.token, "access-token");
 });
 

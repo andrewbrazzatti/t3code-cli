@@ -179,6 +179,33 @@ t3ctl thread start --project my-project --message "Refactor code" --format json
 cat prompt.txt | t3ctl thread start --project my-project --format json
 ```
 
+### Run a Thread in a Git Worktree
+
+1. Start a thread in a fresh server-managed worktree (branched from the repo's
+   default branch, project setup script included):
+```sh
+t3ctl thread start --project my-project --message "Refactor code" --worktree
+```
+
+2. Control the base and the branch, optionally starting from `origin`:
+```sh
+t3ctl thread start --project my-project --message "Run tests" --worktree --base-branch main --from-origin --branch t3code/my-feature
+```
+
+3. Attach an existing directory as the thread's worktree instead of creating one:
+```sh
+t3ctl thread start --project my-project --message "Review it" --worktree-path /path/to/worktree
+```
+
+4. Create a thread in a worktree without starting a turn (`--from-origin` is
+   not available here; only `thread start` prepares worktrees during turn start):
+```sh
+t3ctl thread create --project my-project --title "Worktree thread" --worktree --base-branch main
+```
+
+The JSON result includes the resolved `worktreePath` and `branch`.
+`--worktree` and `--worktree-path` are mutually exclusive.
+
 ### Interact with Threads
 
 1. Send a message to an active thread:
@@ -242,6 +269,64 @@ t3ctl thread unarchive <thread-id>
 ```sh
 t3ctl thread delete <thread-id>
 ```
+
+---
+
+## Schedule Sends (`schedule`)
+
+Queue a message for a thread now and let a scheduler process fire it later.
+The primary use case is resuming a thread when a provider quota window resets:
+the T3 server has no quota API, so scheduling lives client-side and "quota is
+back" is approximated by firing at a chosen time and optionally re-sending when
+the turn fails with a rate-limit error.
+
+Scheduled sends live in `~/.config/t3code-cli/schedule.json` and only fire
+while `t3ctl schedule run` is running, so start it under `nohup`, tmux, or a
+service manager and leave it running.
+
+1. Queue a resume for when the quota window resets (5 hours out), retrying for
+   up to 2 more hours in case the reset time drifts:
+```sh
+t3ctl schedule add <thread-id> --in 5h --message "Resume the task" --retry-until 2h
+```
+
+2. Queue at a specific clock time instead:
+```sh
+t3ctl schedule add <thread-id> --at 2026-09-04T09:30 --message "Continue"
+```
+
+3. Start the scheduler (it fires due entries and keeps polling):
+```sh
+nohup t3ctl schedule run >/tmp/t3ctl-schedule.log 2>&1 &
+```
+
+4. Inspect and manage the queue:
+```sh
+t3ctl schedule list            # pending entries
+t3ctl schedule list --all      # include sent/failed/cancelled
+t3ctl schedule cancel <id>     # unique id prefix works
+```
+
+Behavior notes:
+
+- `--at` takes an ISO time in the future; `--in` takes a duration (`45m`,
+  `2h30m`, `1d12h`). Exactly one is required. Model/mode flags
+  (`--provider`, `--model`, `--runtime-mode`, ...) are accepted like
+  `thread send` and replayed when the entry fires.
+- `--retry-until <duration>` opts into quota-aware retries: after the send,
+  the scheduler watches the turn and re-sends on rate-limit-looking failures
+  every `--retry-interval` (default 15m) until the deadline, then marks the
+  entry `failed`. Each retry appends a new user message to the thread.
+  Without it, the entry is marked `sent` once dispatched.
+- The destination environment (or server URL) is pinned when the entry is
+  added, so later `auth use` switches cannot misroute the send; credentials
+  are resolved fresh at fire time.
+- A crashed scheduler leaves entries that were mid-send in `running`; the
+  next `schedule run` re-arms them, so sends are at-least-once (a duplicate
+  resume message is harmless).
+- `t3ctl schedule run --once` fires everything currently due and exits, which
+  suits cron/systemd timers; it exits non-zero if any entry failed.
+- `t3ctl schedule add` alone does nothing until a runner fires the entry.
 
 ---
 

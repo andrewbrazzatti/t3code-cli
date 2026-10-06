@@ -1,9 +1,9 @@
-import { WsRpcGroup } from "@t3tools/contracts";
+import { ORCHESTRATION_PROTOCOL_QUERY_PARAM, ORCHESTRATION_PROTOCOL_VERSION, WsRpcGroup } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as RpcClient from "effect/unstable/rpc/RpcClient";
-import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
-import * as Socket from "effect/unstable/socket/Socket";
+import * as RpcClient from "effect/rpc/RpcClient";
+import * as RpcSerialization from "effect/rpc/RpcSerialization";
+import * as Socket from "effect/socket/Socket";
 import WebSocket from "ws";
 
 import { ConfigError, loadConfig } from "./config.js";
@@ -52,6 +52,9 @@ function makeTarget(input: {
   const wsUrl = new URL(httpBaseUrl);
   wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
   wsUrl.pathname = "/ws";
+  // The server rejects the upgrade with 426 unless the client announces the
+  // orchestration wire protocol it speaks.
+  wsUrl.searchParams.set(ORCHESTRATION_PROTOCOL_QUERY_PARAM, String(ORCHESTRATION_PROTOCOL_VERSION));
   // The current server accepts the bearer in the handshake. The token is also
   // sent as an Authorization header by connectClient; the query parameter is
   // retained for older T3 Code server versions.
@@ -124,10 +127,15 @@ export const makeWsRpcProtocolClient = RpcClient.make(WsRpcGroup);
 export const connectClient = Effect.fnUntraced(function* (socketUrl: string, token?: string) {
   const wsConstructorLayer = Layer.succeed(
     Socket.WebSocketConstructor,
-    (url: string, protocols?: string | string[]) =>
-      new WebSocket(url, protocols, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      }) as any,
+    (url: string, options?: Socket.WebSocketConstructorOptions): Socket.WebSocketLike => {
+      const passed = options && typeof options === "object" && !Array.isArray(options) ? options : undefined;
+      const protocols = typeof options === "string" || Array.isArray(options) ? options : undefined;
+      const headers: Record<string, string> = {
+        ...(passed?.headers ?? {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      };
+      return new WebSocket(url, protocols, Object.keys(headers).length > 0 ? { headers } : undefined) as unknown as Socket.WebSocketLike;
+    },
   );
 
   const socketLayer = Socket.layerWebSocket(socketUrl, { openTimeout: "15 seconds" }).pipe(

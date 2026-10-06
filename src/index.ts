@@ -45,6 +45,7 @@ import {
 } from "./commands.js";
 import { ConfigError } from "./config.js";
 import { outputFormatFromArgv, createOutputSink, type OutputFormat } from "./output.js";
+import { scheduleAdd, scheduleCancel, scheduleList, scheduleRun } from "./schedule.js";
 import { attachTerminal, closeTerminal, listTerminals } from "./terminal.js";
 
 interface ParsedArgs {
@@ -367,7 +368,7 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
     const threadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID || args.positionals[0];
     if (subcommand === "list") { await listThreads({ ...context, projectId: flag(args, "project") || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID || args.positionals[0] }); return 0; }
     if (subcommand === "create") {
-      await createThread({ ...context, projectId: required(args, "project", process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID), title: required(args, "title"), provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
+      await createThread({ ...context, projectId: required(args, "project", process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID), title: required(args, "title"), provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args), worktree: boolFlag(args, "worktree"), worktreePath: flag(args, "worktree-path"), baseBranch: flag(args, "base-branch"), branch: flag(args, "branch"), fromOrigin: boolFlag(args, "from-origin") });
       return 0;
     }
     if (subcommand === "start") {
@@ -377,14 +378,16 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       const message = await readMessage(args, startThreadId ? 1 : 0);
       const wait = boolFlag(args, "wait");
       const images = imageFlags(args);
-      const result = await startThread({ ...context, threadId: startThreadId, projectId: projectSelection, title: flag(args, "title"), message, images, wait, provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
+      const result = await startThread({ ...context, threadId: startThreadId, projectId: projectSelection, title: flag(args, "title"), message, images, wait, provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args), worktree: boolFlag(args, "worktree"), worktreePath: flag(args, "worktree-path"), baseBranch: flag(args, "base-branch"), branch: flag(args, "branch"), fromOrigin: boolFlag(args, "from-origin") });
       return lifecycleExitCode((result as any)?.wait?.status);
     }
     if (subcommand === "send") {
-      if (!threadId) throw new ConfigError("thread send requires a thread ID.", "thread_missing");
-      const message = await readMessage(args, 1);
+      const explicitThreadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID;
+      const sendThreadId = explicitThreadId || args.positionals[0];
+      if (!sendThreadId) throw new ConfigError("thread send requires a thread ID.", "thread_missing");
+      const message = await readMessage(args, explicitThreadId ? 0 : 1);
       const images = imageFlags(args);
-      const result = await sendMessage({ ...context, threadId, message, images, wait: boolFlag(args, "wait"), provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
+      const result = await sendMessage({ ...context, threadId: sendThreadId, message, images, wait: boolFlag(args, "wait"), provider: flag(args, "provider"), model: flag(args, "model"), runtimeMode: flag(args, "runtime-mode"), interactionMode: flag(args, "interaction-mode"), options: modelOptions(args) });
       return lifecycleExitCode((result as any)?.wait?.status);
     }
     if (["wait", "watch"].includes(subcommand || "")) {
@@ -454,6 +457,48 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       return 0;
     }
     throw new ConfigError("Unknown terminal command. Use terminal attach, terminal list, or terminal close.", "cli_parse_failed");
+  }
+  if (root === "schedule") {
+    if (subcommand === "add") {
+      const explicitThreadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID;
+      const scheduleThreadId = explicitThreadId || args.positionals[0];
+      if (!scheduleThreadId) throw new ConfigError("schedule add requires a thread ID.", "thread_missing");
+      const message = await readMessage(args, explicitThreadId ? 0 : 1);
+      const entry = await scheduleAdd({
+        ...context,
+        threadId: scheduleThreadId,
+        message,
+        images: imageFlags(args),
+        at: flag(args, "at"),
+        in: flag(args, "in"),
+        retryUntil: flag(args, "retry-until"),
+        retryInterval: flag(args, "retry-interval"),
+        provider: flag(args, "provider"),
+        model: flag(args, "model"),
+        runtimeMode: flag(args, "runtime-mode"),
+        interactionMode: flag(args, "interaction-mode"),
+        options: modelOptions(args),
+      });
+      createOutputSink(format).write(entry);
+      return 0;
+    }
+    if (subcommand === "list") {
+      const result = await scheduleList({ ...context, all: boolFlag(args, "all") });
+      createOutputSink(format).write(result);
+      return 0;
+    }
+    if (subcommand === "cancel" || subcommand === "rm" || subcommand === "remove") {
+      const scheduleId = required(args, "id", args.positionals[0]);
+      const entry = await scheduleCancel({ ...context, scheduleId });
+      createOutputSink(format).write(entry);
+      return 0;
+    }
+    if (subcommand === "run") {
+      const summary = await scheduleRun({ ...context, interval: flag(args, "interval"), once: boolFlag(args, "once") });
+      createOutputSink(format).write(summary);
+      return summary.failed > 0 ? 1 : 0;
+    }
+    throw new ConfigError("Unknown schedule command. Use schedule add, schedule list, schedule cancel, or schedule run.", "cli_parse_failed");
   }
   if (root === "connect") {
     // Clean-break alias retained as a discoverable migration path.

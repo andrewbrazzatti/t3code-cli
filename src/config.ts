@@ -158,7 +158,7 @@ export function loadConfig(): T3CodeCliConfig {
   return validateConfig(parsed);
 }
 
-function writeSecureJson(file: string, value: unknown): void {
+export function writeSecureJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });

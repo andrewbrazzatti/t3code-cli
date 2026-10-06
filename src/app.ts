@@ -1,6 +1,7 @@
-import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
+import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
@@ -37,6 +38,15 @@ function command(commandType: string, fields: Record<string, unknown>): Record<s
   return { type: commandType, commandId: generateId("cmd"), ...fields };
 }
 
+/**
+ * Orchestration V2 commands that create threads or dispatch messages require
+ * actor/creation-source provenance. The CLI acts as a programmatic client.
+ */
+const CREATION = { createdBy: "user", creationSource: "mcp" } as const;
+
+/** Run statuses that mean the run has not reached a terminal state yet. */
+const ACTIVE_RUN_STATUSES: ReadonlySet<string> = new Set(["preparing", "queued", "starting", "running", "waiting"]);
+
 function projectMatches(project: any, query: string): boolean {
   const needle = query.trim().toLowerCase();
   return [project.id, project.title, project.workspaceRoot, path.basename(project.workspaceRoot || "")]
@@ -47,12 +57,12 @@ function projectMatches(project: any, query: string): boolean {
 async function loadShell(options: TargetOptions): Promise<{ projects: any[]; threads: any[] }> {
   return withClient(options, (client) => Effect.gen(function* () {
     let live: any;
-    const liveStream = client[ORCHESTRATION_WS_METHODS.subscribeShell]({});
+    const liveStream = client[ORCHESTRATION_V2_WS_METHODS.subscribeShell]({});
     yield* liveStream.pipe(Stream.runForEachWhile((item: any) => Effect.sync(() => {
       if (item?.kind === "snapshot") live = item.snapshot;
       return live === undefined;
     })));
-    const archived = yield* client[ORCHESTRATION_WS_METHODS.getArchivedShellSnapshot]({});
+    const archived = yield* client[ORCHESTRATION_V2_WS_METHODS.getArchivedShellSnapshot]({});
     const merge = (values: any[]) => {
       const byId = new Map<string, any>();
       for (const value of values) if (value?.id) byId.set(String(value.id), value);
@@ -60,22 +70,29 @@ async function loadShell(options: TargetOptions): Promise<{ projects: any[]; thr
     };
     return {
       projects: merge([...(live?.projects ?? []), ...(archived?.projects ?? [])]),
-      threads: merge([...(live?.threads ?? []), ...(archived?.threads ?? [])]),
+      threads: merge([
+        ...(live?.threads ?? []),
+        ...(live?.archivedThreads ?? []),
+        ...(archived?.threads ?? []),
+      ]),
     };
   }));
 }
 
 async function loadThread(options: TargetOptions, threadId: string): Promise<any> {
   return withClient(options, (client) => Effect.gen(function* () {
-    const stream = client[ORCHESTRATION_WS_METHODS.subscribeThread]({ threadId });
-    let thread: any;
-    yield* stream.pipe(Stream.runForEachWhile((item: any) => Effect.sync(() => {
-      if (item?.kind === "snapshot") thread = item.snapshot?.thread;
-      return thread === undefined;
-    })));
-    if (!thread) throw new ConfigError(`Thread "${threadId}" was not found.`, "thread_missing");
-    return thread;
-  }));
+    const projection: any = yield* client[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId });
+    if (!projection?.thread) throw new ConfigError(`Thread "${threadId}" was not found.`, "thread_missing");
+    return {
+      ...projection.thread,
+      messages: projection.messages ?? [],
+      activities: projection.visibleTurnItems ?? projection.turnItems ?? [],
+      runs: projection.runs ?? [],
+      runtimeRequests: projection.runtimeRequests ?? [],
+    };
+  })).catch((error: unknown) => {
+    throw describeSchemaMismatch(error) ?? error;
+  });
 }
 
 /**
@@ -119,14 +136,15 @@ export async function addProject(options: CommandContext & { readonly workspaceR
   const title = options.title?.trim() || path.basename(workspaceRoot) || "Untitled Project";
   const projectId = generateId("proj");
   await withClient(options, (client) => Effect.gen(function* () {
-    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.create", {
+    yield* client[WS_METHODS.projectsMutate]({
+      type: "project.create",
+      commandId: generateId("cmd"),
       projectId,
       title,
       workspaceRoot,
       createWorkspaceRootIfMissing: false,
       defaultModelSelection: null,
-      createdAt: new Date().toISOString(),
-    }));
+    });
   }));
   const result = { id: projectId, projectId, title, workspaceRoot };
   sink.write(result);
@@ -147,14 +165,15 @@ export async function cloneProject(options: CommandContext & {
       destinationPath: options.destination,
     });
     const workspaceRoot = result?.cwd || options.destination;
-    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.create", {
+    yield* client[WS_METHODS.projectsMutate]({
+      type: "project.create",
+      commandId: generateId("cmd"),
       projectId,
       title,
       workspaceRoot,
       createWorkspaceRootIfMissing: false,
       defaultModelSelection: null,
-      createdAt: new Date().toISOString(),
-    }));
+    });
     return { workspaceRoot };
   }));
   const output = { id: projectId, projectId, title, workspaceRoot: cloned.workspaceRoot, repositoryUrl: options.repositoryUrl };
@@ -168,7 +187,7 @@ export async function deleteProject(options: CommandContext & { readonly project
   const project = shell.find((entry: any) => projectMatches(entry, options.projectId));
   const projectId = project?.id || options.projectId;
   await withClient(options, (client) => Effect.gen(function* () {
-    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.delete", { projectId, force: options.force }));
+    yield* client[WS_METHODS.projectsMutate]({ type: "project.delete", commandId: generateId("cmd"), projectId, force: options.force });
   }));
   const result = { projectId, deleted: true };
   sink.write(result);
@@ -193,7 +212,7 @@ export async function updateProject(options: CommandContext & {
   if (options.provider || options.model || options.options?.length) fields.defaultModelSelection = resolveModel(options, project);
   if (Object.keys(fields).length === 0) throw new ConfigError("project update requires a metadata option.", "cli_parse_failed");
   await withClient(options, (client) => Effect.gen(function* () {
-    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("project.meta.update", { projectId, ...fields }));
+    yield* client[WS_METHODS.projectsMutate]({ type: "project.update", commandId: generateId("cmd"), projectId, ...fields });
   }));
   const result = { projectId, updated: true, fields };
   sink.write(result);
@@ -503,6 +522,99 @@ async function resolveProject(options: TargetOptions, query: string): Promise<an
   return project;
 }
 
+export interface WorktreeSettings {
+  /** Create a fresh server-managed git worktree for the thread. */
+  readonly worktree?: boolean;
+  /** Attach an existing directory on the server as the thread's worktree instead of creating one. */
+  readonly worktreePath?: string;
+  /** Ref a fresh worktree branches from (default: the repository's default branch). */
+  readonly baseBranch?: string;
+  /** Branch to create inside the worktree (default: a temporary t3code/<hex> branch). */
+  readonly branch?: string;
+  /** Base a fresh worktree on origin/<base-branch> instead of the local checkout (thread start only). */
+  readonly fromOrigin?: boolean;
+}
+
+/**
+ * Reject impossible worktree flag combinations before any network traffic:
+ * --worktree creates a fresh worktree while --worktree-path attaches an
+ * existing directory, and --base-branch/--from-origin only mean something when
+ * a worktree is actually being created.
+ */
+export function validateWorktreeSettings(options: WorktreeSettings): void {
+  const hasPath = Boolean(options.worktreePath?.trim());
+  if (options.worktree && hasPath) {
+    throw new ConfigError(
+      "--worktree and --worktree-path are mutually exclusive: use --worktree to create a fresh worktree, or --worktree-path to reuse an existing directory.",
+      "cli_parse_failed",
+    );
+  }
+  if (!hasPath && options.branch?.trim() && !options.worktree) {
+    throw new ConfigError("--branch requires --worktree or --worktree-path.", "cli_parse_failed");
+  }
+  if (!options.worktree) {
+    for (const [name, value] of [["--base-branch", options.baseBranch?.trim()], ["--from-origin", options.fromOrigin]] as const) {
+      if (value !== undefined && value !== false) {
+        throw new ConfigError(`${name} requires --worktree.`, "cli_parse_failed");
+      }
+    }
+  }
+}
+
+/**
+ * Temporary worktree branch names follow the apps' canonical `t3code/<8 hex>`
+ * shape so cleanup tooling recognises them.
+ */
+function temporaryWorktreeBranch(): string {
+  return `t3code/${crypto.randomBytes(4).toString("hex")}`;
+}
+
+/**
+ * Pick the ref a fresh worktree branches from: an explicit --base-branch, else
+ * the repository's default local branch as reported by the server, else
+ * whatever the main checkout currently has checked out.
+ */
+async function resolveWorktreeBaseBranch(options: TargetOptions & WorktreeSettings, workspaceRoot: string): Promise<string> {
+  const requested = options.baseBranch?.trim();
+  if (requested) return requested;
+  return withClient(options, (client) => Effect.gen(function* () {
+    const refs: any = yield* client[WS_METHODS.vcsListRefs]({ cwd: workspaceRoot, refKind: "local", limit: 200 }).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    const defaultRef = Array.isArray(refs?.refs)
+      ? refs.refs.find((ref: any) => ref.isDefault && !ref.isRemote)?.name
+      : undefined;
+    if (typeof defaultRef === "string" && defaultRef.trim()) return defaultRef.trim();
+    const status: any = yield* client[WS_METHODS.vcsRefreshStatus]({ cwd: workspaceRoot }).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    const current = typeof status?.refName === "string" ? status.refName.trim() : "";
+    if (current) return current;
+    throw new ConfigError(
+      `Could not determine which ref the new worktree in "${workspaceRoot}" should branch from. Pass --base-branch explicitly.`,
+      "cli_parse_failed",
+    );
+  }));
+}
+
+/** Translate CLI worktree flags into the V2 launch workspace strategy. */
+async function buildWorkspaceStrategy(options: TargetOptions & WorktreeSettings, workspaceRoot: string): Promise<Record<string, unknown>> {
+  const branch = options.branch?.trim();
+  if (options.worktreePath?.trim()) {
+    return { type: "existing_worktree", worktreePath: options.worktreePath.trim(), ...(branch ? { branch } : {}) };
+  }
+  if (options.worktree) {
+    const baseRef = await resolveWorktreeBaseBranch(options, workspaceRoot);
+    return {
+      type: "worktree",
+      baseRef,
+      ...(branch ? { branch } : {}),
+      ...(options.fromOrigin ? { startFromOrigin: true } : {}),
+    };
+  }
+  return { type: "root" };
+}
+
 export async function createThread(options: CommandContext & {
   readonly projectId: string;
   readonly title: string;
@@ -512,25 +624,33 @@ export async function createThread(options: CommandContext & {
   readonly interactionMode?: string;
   readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>;
   readonly silent?: boolean;
-}): Promise<unknown> {
+} & WorktreeSettings): Promise<unknown> {
   const { sink } = commandContext(options);
+  validateWorktreeSettings(options);
   const project = await resolveProject(options, options.projectId);
   const modelSelection = resolveModel(options, project);
-  const threadId = generateId("thread");
-  await withClient(options, (client) => Effect.gen(function* () {
-    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("thread.create", {
-      threadId,
+  const workspaceStrategy = await buildWorkspaceStrategy(options, project.workspaceRoot);
+  const launched: any = await withClient(options, (client) => Effect.gen(function* () {
+    return yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+      commandId: generateId("cmd"),
+      ...CREATION,
       projectId: project.id,
       title: options.title,
       modelSelection,
       runtimeMode: options.runtimeMode || "full-access",
       interactionMode: options.interactionMode || "default",
-      branch: null,
-      worktreePath: null,
-      createdAt: new Date().toISOString(),
-    }));
+      workspaceStrategy,
+    });
   }));
-  const result = { id: threadId, threadId, projectId: project.id, title: options.title, modelSelection };
+  const thread = launched?.projection?.thread ?? {};
+  const result = {
+    id: launched?.threadId,
+    threadId: launched?.threadId,
+    projectId: project.id,
+    title: options.title,
+    modelSelection,
+    ...(thread.worktreePath ? { worktreePath: thread.worktreePath, branch: thread.branch } : {}),
+  };
   if (!options.silent) sink.write(result);
   return result;
 }
@@ -545,64 +665,115 @@ function getMimeType(filePath: string): string {
     case ".webp": return "image/webp";
     case ".svg": return "image/svg+xml";
     case ".bmp": return "image/bmp";
-    default: return "image/png";
+    case ".pdf": return "application/pdf";
+    case ".txt": return "text/plain";
+    case ".md": return "text/markdown";
+    case ".json": return "application/json";
+    case ".csv": return "text/csv";
+    case ".html": return "text/html";
+    case ".zip": return "application/zip";
+    case ".tar": return "application/x-tar";
+    case ".gz": return "application/gzip";
+    default: return "application/octet-stream";
   }
 }
 
-async function prepareImageAttachments(imagePaths?: ReadonlyArray<string>): Promise<Array<any>> {
-  if (!imagePaths || imagePaths.length === 0) return [];
-  const attachments: Array<any> = [];
-  for (const item of imagePaths) {
+/**
+ * Upload each path through the V2 attachment flow: mint a signed upload URL
+ * over the RPC channel, POST the bytes to it, then reference the persisted
+ * attachment by id on the message. V2 commands no longer accept inline data
+ * URLs, so images and files both go through the same two steps.
+ */
+const uploadAttachments = (
+  client: any,
+  target: { readonly httpBaseUrl: string; readonly token?: string },
+  paths?: ReadonlyArray<string>,
+) => Effect.gen(function* () {
+  if (!paths || paths.length === 0) return [] as Array<Record<string, unknown>>;
+  const attachments: Array<Record<string, unknown>> = [];
+  for (const item of paths) {
     const fullPath = path.resolve(item);
-    try {
-      const stats = await fs.stat(fullPath);
-      if (!stats.isFile()) {
-        throw new ConfigError(`Image path "${item}" is not a file.`, "cli_parse_failed");
-      }
-      const buffer = await fs.readFile(fullPath);
-      const mimeType = getMimeType(fullPath);
-      const name = path.basename(fullPath);
-      const base64 = buffer.toString("base64");
-      attachments.push({
-        type: "image",
-        name,
-        mimeType,
-        sizeBytes: buffer.length,
-        dataUrl: `data:${mimeType};base64,${base64}`,
-      });
-    } catch (err: any) {
-      if (err instanceof ConfigError) throw err;
-      throw new ConfigError(`Failed to read image file "${item}": ${err.message}`, "cli_parse_failed");
+    const stats = yield* Effect.tryPromise({
+      try: () => fs.stat(fullPath),
+      catch: (err: any) => new ConfigError(`Failed to read file "${item}": ${err?.message ?? err}`, "cli_parse_failed"),
+    });
+    if (!stats.isFile()) throw new ConfigError(`Attachment path "${item}" is not a file.`, "cli_parse_failed");
+    const buffer = yield* Effect.tryPromise({
+      try: () => fs.readFile(fullPath),
+      catch: (err: any) => new ConfigError(`Failed to read file "${item}": ${err?.message ?? err}`, "cli_parse_failed"),
+    });
+    const mimeType = getMimeType(fullPath);
+    const name = path.basename(fullPath);
+    const type = mimeType.startsWith("image/") ? "image" : "file";
+    const created: any = yield* client[WS_METHODS.attachmentsCreateUploadUrl]({
+      type,
+      name,
+      mimeType,
+      sizeBytes: buffer.length,
+    });
+    const uploadUrl = new URL(created.relativeUrl, target.httpBaseUrl).toString();
+    const response = yield* Effect.tryPromise({
+      try: () => fetch(uploadUrl, {
+        method: "POST",
+        body: buffer,
+        headers: {
+          "Content-Type": mimeType,
+          "Content-Length": String(buffer.length),
+          ...(target.token ? { Authorization: `Bearer ${target.token}` } : {}),
+        },
+      }),
+      catch: (err: any) => new ConfigError(`Failed to upload "${name}": ${err?.message ?? err}`, "command_failed"),
+    });
+    if (!response.ok) {
+      throw new ConfigError(`Failed to upload "${name}": server returned ${response.status}.`, "command_failed");
     }
+    attachments.push({ type, id: created.attachmentId, name, mimeType, sizeBytes: buffer.length });
   }
   return attachments;
+});
+
+/** The newest run in a projection by ordinal. */
+function newestRun(projection: any): any {
+  const runs: any[] = projection?.runs ?? [];
+  return runs.reduce((latest: any, run: any) => (!latest || run.ordinal >= latest.ordinal ? run : latest), undefined);
 }
 
-async function startTurn(options: CommandContext & { readonly threadId: string; readonly message: string; readonly images?: ReadonlyArray<string> } & ModelOptions): Promise<unknown> {
+/** The most recent run that has not reached a terminal state. */
+function activeRun(projection: any): any {
+  const runs: any[] = (projection?.runs ?? []).filter((run: any) => ACTIVE_RUN_STATUSES.has(run.status));
+  return runs.length > 0 ? runs[runs.length - 1] : undefined;
+}
+
+async function dispatchMessage(options: CommandContext & { readonly threadId: string; readonly message: string; readonly images?: ReadonlyArray<string>; readonly titleSeed?: string } & ModelOptions): Promise<{ threadId: string; messageId: string; requestedAt: string; accepted: boolean }> {
   const messageId = generateId("msg");
   const requestedAt = new Date().toISOString();
-  const attachments = await prepareImageAttachments(options.images);
-  const result = await withClient(options, (client) => Effect.gen(function* () {
-    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command("thread.turn.start", {
+  return withClient(options, (client, target) => Effect.gen(function* () {
+    const attachments = yield* uploadAttachments(client, target, options.images);
+    const projection: any = yield* client[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: options.threadId }).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+    const running = activeRun(projection);
+    yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command("message.dispatch", {
+      ...CREATION,
       threadId: options.threadId,
-      message: { messageId, role: "user", text: options.message, attachments },
+      messageId,
+      text: options.message,
+      attachments,
+      ...(options.titleSeed ? { titleSeed: options.titleSeed } : {}),
       ...(options.provider || options.model || options.options?.length ? { modelSelection: resolveModel(options) } : {}),
-      runtimeMode: options.runtimeMode || "full-access",
-      interactionMode: options.interactionMode || "default",
-      createdAt: requestedAt,
+      dispatchMode: running ? { type: "queue_after_active" } : { type: "start_immediately" },
     }));
     return { threadId: options.threadId, messageId, requestedAt, accepted: true };
   }));
-  return result;
 }
 
 export async function sendMessage(options: CommandContext & { readonly threadId: string; readonly message: string; readonly images?: ReadonlyArray<string>; readonly wait?: boolean } & ModelOptions): Promise<unknown> {
   const sink = options.sink ?? createOutputSink(options.wait ? "ndjson" : options.format, { stream: Boolean(options.wait), stdoutIsTTY: process.stdout.isTTY });
-  const result = await startTurn(options);
+  const result = await dispatchMessage(options);
   if (!options.wait) sink.write(result);
   if (options.wait) {
-    const waited = await waitForThread({ ...options, sink, threadId: options.threadId, since: (result as any).requestedAt });
-    return { ...result as any, wait: waited };
+    const waited = await waitForThread({ ...options, sink, threadId: options.threadId, since: result.requestedAt });
+    return { ...result, wait: waited };
   }
   return result;
 }
@@ -614,20 +785,81 @@ export async function startThread(options: CommandContext & {
   readonly message: string;
   readonly images?: ReadonlyArray<string>;
   readonly wait?: boolean;
-} & ModelOptions): Promise<unknown> {
-  let threadId = options.threadId;
-  let projectId = options.projectId;
-  let title = options.title;
-  if (!threadId) {
-    if (!projectId) throw new ConfigError("thread start requires --project unless --thread is supplied.", "project_missing");
-    const created = await createThread({ ...options, projectId, title: title || "CLI thread", silent: true });
-    threadId = String((created as any).threadId);
-  }
+} & ModelOptions & WorktreeSettings): Promise<unknown> {
+  validateWorktreeSettings(options);
+  const attachedWorktreePath = options.worktreePath?.trim();
   const sink = options.sink ?? createOutputSink(options.wait ? "ndjson" : options.format, { stream: Boolean(options.wait), stdoutIsTTY: process.stdout.isTTY });
-  const sent = await startTurn({ ...options, threadId, message: options.message, images: options.images });
-  const result = { threadId, ...(projectId ? { projectId } : {}), messageId: (sent as any).messageId, started: true };
+
+  if (options.threadId) {
+    // Existing thread: optionally re-home it, then dispatch the message.
+    if (attachedWorktreePath) {
+      await dispatchThreadCommand({ ...options, threadId: options.threadId }, "thread.metadata.update", { worktreePath: attachedWorktreePath, ...(options.branch?.trim() ? { branch: options.branch.trim() } : {}) }, true);
+    } else if (options.worktree) {
+      const shell = await loadShell(options);
+      const thread = shell.threads.find((entry: any) => entry.id === options.threadId);
+      if (!thread) throw new ConfigError(`Thread "${options.threadId}" was not found. Run "t3ctl thread list" to see available threads.`, "thread_missing");
+      const project = shell.projects.find((entry: any) => entry.id === thread.projectId);
+      const workspaceRoot = typeof project?.workspaceRoot === "string" ? project.workspaceRoot : "";
+      if (!workspaceRoot) {
+        throw new ConfigError(`Could not determine the project workspace root for thread "${options.threadId}". Use --worktree-path to point at an existing directory instead.`, "project_missing");
+      }
+      const strategy: any = await buildWorkspaceStrategy(options, workspaceRoot);
+      const newBranch = options.branch?.trim() || temporaryWorktreeBranch();
+      const prepared: any = await withClient(options, (client) => Effect.gen(function* () {
+        return yield* client[WS_METHODS.vcsCreateWorktree]({
+          cwd: workspaceRoot,
+          refName: strategy.baseRef,
+          newRefName: newBranch,
+          baseRefName: strategy.baseRef,
+          path: null,
+        });
+      }));
+      const worktreePath = typeof prepared?.worktree?.path === "string" ? prepared.worktree.path : null;
+      if (!worktreePath) throw new ConfigError("The server did not return a worktree path.", "command_failed");
+      const branch = typeof prepared?.worktree?.refName === "string" ? prepared.worktree.refName : newBranch;
+      await dispatchThreadCommand({ ...options, threadId: options.threadId }, "thread.metadata.update", { worktreePath, branch }, true);
+    }
+    const sent = await dispatchMessage({ ...options, threadId: options.threadId, message: options.message, images: options.images });
+    const result: Record<string, unknown> = { threadId: options.threadId, messageId: sent.messageId, started: true };
+    if (attachedWorktreePath) {
+      result.worktreePath = attachedWorktreePath;
+      if (options.branch?.trim()) result.branch = options.branch.trim();
+    }
+    if (!options.wait) sink.write(result);
+    if (options.wait) return { ...result, wait: await waitForThread({ ...options, sink, threadId: options.threadId, since: sent.requestedAt }) };
+    return result;
+  }
+
+  // New thread: one V2 launch creates the thread, prepares the workspace, and
+  // dispatches the initial message as a run.
+  if (!options.projectId) throw new ConfigError("thread start requires --project unless --thread is supplied.", "project_missing");
+  const project = await resolveProject(options, options.projectId);
+  const workspaceStrategy = await buildWorkspaceStrategy(options, project.workspaceRoot);
+  const launched: any = await withClient(options, (client, target) => Effect.gen(function* () {
+    const attachments = yield* uploadAttachments(client, target, options.images);
+    return yield* client[ORCHESTRATION_V2_WS_METHODS.launchThread]({
+      commandId: generateId("cmd"),
+      ...CREATION,
+      projectId: project.id,
+      title: options.title?.trim() || "CLI thread",
+      modelSelection: resolveModel(options, project),
+      runtimeMode: options.runtimeMode || "full-access",
+      interactionMode: options.interactionMode || "default",
+      workspaceStrategy,
+      initialMessage: { text: options.message, attachments },
+    });
+  }));
+  const thread = launched?.projection?.thread ?? {};
+  const run = newestRun(launched?.projection);
+  const result: Record<string, unknown> = {
+    threadId: launched?.threadId,
+    projectId: project.id,
+    started: true,
+    ...(thread.worktreePath ? { worktreePath: thread.worktreePath, branch: thread.branch } : {}),
+    ...(attachedWorktreePath ? { worktreePath: attachedWorktreePath } : {}),
+  };
   if (!options.wait) sink.write(result);
-  if (options.wait) return { ...result, wait: await waitForThread({ ...options, sink, threadId, since: (sent as any).requestedAt }) };
+  if (options.wait) return { ...result, wait: await waitForThread({ ...options, sink, threadId: String(launched?.threadId), since: new Date().toISOString(), runId: run?.id }) };
   return result;
 }
 
@@ -649,38 +881,92 @@ export async function transcript(options: CommandContext & { readonly threadId: 
 
 export function normalizeThreadStreamItem(threadId: string, item: any): { type: string; threadId: string; [key: string]: unknown } {
   if (item?.kind === "synchronized") return { type: "thread.synchronized", threadId };
-  if (item?.kind === "snapshot") return { type: "thread.snapshot", threadId, snapshotSequence: item.snapshot?.snapshotSequence, thread: item.snapshot?.thread };
+  if (item?.kind === "snapshot") return { type: "thread.snapshot", threadId, snapshotSequence: item.snapshotSequence, thread: item.projection?.thread, projection: item.projection };
   if (item?.kind === "event") return { type: "thread.event", threadId, event: item.event };
   return { type: "thread.malformed_event", threadId, raw: item };
 }
 
-export function terminalStateFrom(value: any): "completed" | "interrupted" | "failed" | "approval_required" | undefined {
-  const thread = value?.thread ?? value;
-  const latest = thread?.latestTurn;
-  if (latest?.state === "completed") return "completed";
-  if (latest?.state === "interrupted") return "interrupted";
-  if (latest?.state === "error") return "failed";
-  if (thread?.hasPendingApprovals || thread?.hasPendingUserInput) return "approval_required";
-  const activity = value?.event?.payload?.activity ?? value?.event?.activity;
-  const kind = activity?.kind;
-  if (kind === "approval.requested" || kind === "user-input.requested") return "approval_required";
-  if (kind === "turn.completed") return "completed";
-  if (kind === "turn.aborted" || kind === "turn.interrupted") return "interrupted";
-  if (kind === "turn.failed" || kind === "runtime.error") return "failed";
+function terminalStatusForRun(run: any): "completed" | "interrupted" | "failed" | undefined {
+  if (!run) return undefined;
+  if (run.status === "completed") return "completed";
+  if (run.status === "interrupted" || run.status === "cancelled") return "interrupted";
+  if (run.status === "failed") return "failed";
   return undefined;
 }
 
-async function streamThread(options: CommandContext & { readonly threadId: string }, stopOnTerminal: boolean): Promise<{ status: string; threadId: string }> {
+function projectionRun(projection: any, runId?: string): any {
+  const runs: any[] = projection?.runs ?? [];
+  if (runId) return runs.find((run: any) => run.id === runId) ?? newestRun(projection);
+  return newestRun(projection);
+}
+
+function projectionHasPendingRequest(projection: any): boolean {
+  return (projection?.runtimeRequests ?? []).some((request: any) => request.status === "pending");
+}
+
+export function terminalStateFrom(value: any): "completed" | "interrupted" | "failed" | "approval_required" | undefined {
+  const projection = value?.projection ?? (Array.isArray(value?.runs) ? value : undefined);
+  if (projection) {
+    if (projectionHasPendingRequest(projection)) return "approval_required";
+    return terminalStatusForRun(projectionRun(projection));
+  }
+  const event = value?.event;
+  if (event?.type === "run.updated") return terminalStatusForRun(event.payload);
+  if (event?.type === "runtime-request.updated" && event.payload?.status === "pending") return "approval_required";
+  return undefined;
+}
+
+/**
+ * Best-effort failure reason from a projection, for callers that need to act on
+ * *why* a turn failed (e.g. the schedule runner's rate-limit retry). V2 surfaces
+ * provider failures as `error` turn items carrying a `failure` payload.
+ */
+function errorTextFromProjection(projection: any): string | undefined {
+  const items: any[] = projection?.visibleTurnItems ?? projection?.turnItems ?? [];
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const payload = items[index]?.item ?? items[index];
+    if (payload?.type === "error" && typeof payload?.failure?.message === "string" && payload.failure.message.trim()) {
+      return payload.failure.message.trim();
+    }
+  }
+  return undefined;
+}
+
+async function streamThread(options: CommandContext & { readonly threadId: string; readonly runId?: string }, stopOnTerminal: boolean): Promise<{ status: string; threadId: string; errorText?: string }> {
   const sink = options.sink ?? createOutputSink(options.format, { stream: true, stdoutIsTTY: process.stdout.isTTY });
   let status = "running";
+  let errorText: string | undefined;
+  let watchedRunId = options.runId;
   await withClient(options, (client) => Effect.gen(function* () {
-    const stream = client[ORCHESTRATION_WS_METHODS.subscribeThread]({ threadId: options.threadId });
+    const stream = client[ORCHESTRATION_V2_WS_METHODS.subscribeThread]({ threadId: options.threadId });
     yield* stream.pipe(
       Stream.runForEachWhile((item: any) => Effect.sync(() => {
         const event = normalizeThreadStreamItem(options.threadId, item);
         sink.event(event.type, event);
-        const snapshotIsBeforeRequestedTurn = item?.kind === "snapshot" && options.since && item.snapshot?.thread?.latestTurn?.requestedAt && item.snapshot.thread.latestTurn.requestedAt < options.since;
-        const next = snapshotIsBeforeRequestedTurn ? undefined : terminalStateFrom(item?.kind === "snapshot" ? item.snapshot : item?.kind === "event" ? { event: item.event } : item);
+        let next: string | undefined;
+        if (item?.kind === "snapshot") {
+          const projection = item.projection;
+          const newest = newestRun(projection);
+          const stale = !options.runId && options.since && newest?.requestedAt && newest.requestedAt < options.since;
+          if (!stale) {
+            if (!watchedRunId) watchedRunId = newest?.id;
+            if (projectionHasPendingRequest(projection)) next = "approval_required";
+            else next = terminalStatusForRun(projectionRun(projection, watchedRunId));
+            errorText = errorTextFromProjection(projection) ?? errorText;
+          }
+        } else if (item?.kind === "event") {
+          const domainEvent = item.event;
+          if (domainEvent?.type === "run.created" || domainEvent?.type === "run.updated") {
+            const run = domainEvent.payload;
+            if (domainEvent.type === "run.created" && !watchedRunId) watchedRunId = run?.id;
+            if (run?.id === watchedRunId) next = terminalStatusForRun(run);
+          } else if (domainEvent?.type === "runtime-request.updated" && domainEvent.payload?.status === "pending") {
+            next = "approval_required";
+          } else if (domainEvent?.type === "turn-item.updated" && domainEvent.payload?.type === "error") {
+            const message = domainEvent.payload?.failure?.message;
+            if (typeof message === "string" && message.trim()) errorText = message.trim();
+          }
+        }
         if (next) status = next;
         return !(stopOnTerminal && Boolean(next));
       })),
@@ -690,7 +976,7 @@ async function streamThread(options: CommandContext & { readonly threadId: strin
       })),
     );
   }));
-  return { status, threadId: options.threadId };
+  return { status, threadId: options.threadId, errorText };
 }
 
 export async function watchThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
@@ -698,7 +984,7 @@ export async function watchThread(options: CommandContext & { readonly threadId:
   return result;
 }
 
-export async function waitForThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
+export async function waitForThread(options: CommandContext & { readonly threadId: string; readonly runId?: string }): Promise<unknown> {
   const result = await streamThread({ ...options, format: "ndjson" }, true);
   const sink = options.sink ?? createOutputSink("ndjson", { stream: true, stdoutIsTTY: process.stdout.isTTY });
   sink.event("thread.completed", result);
@@ -708,7 +994,7 @@ export async function waitForThread(options: CommandContext & { readonly threadI
 async function dispatchThreadCommand(options: CommandContext & { readonly threadId: string }, type: string, fields: Record<string, unknown> = {}, silent = false): Promise<unknown> {
   const { sink } = commandContext(options);
   await withClient(options, (client) => Effect.gen(function* () {
-    yield* client[ORCHESTRATION_WS_METHODS.dispatchCommand](command(type, { threadId: options.threadId, ...fields, ...(type !== "thread.unsettle" ? {} : { reason: "user" }) }));
+    yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command(type, { threadId: options.threadId, ...fields, ...(type !== "thread.unsettle" ? {} : { reason: "user" }) }));
   }));
   const result = { threadId: options.threadId, operation: type, accepted: true };
   if (!silent) sink.write(result);
@@ -724,30 +1010,42 @@ export async function unsettleThread(options: CommandContext & { readonly thread
 export async function updateThread(options: CommandContext & { readonly threadId: string; readonly title?: string; readonly provider?: string; readonly model?: string; readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>; readonly branch?: string; readonly worktreePath?: string; readonly runtimeMode?: string; readonly interactionMode?: string }): Promise<unknown> {
   const fields: Record<string, unknown> = {};
   if (options.title) fields.title = options.title;
-  if (options.provider || options.model || options.options?.length) fields.modelSelection = resolveModel(options);
   if (options.branch !== undefined) fields.branch = options.branch || null;
   if (options.worktreePath !== undefined) fields.worktreePath = options.worktreePath || null;
-  if (Object.keys(fields).length === 0 && !options.runtimeMode && !options.interactionMode) {
+  const hasModel = Boolean(options.provider || options.model || options.options?.length);
+  if (Object.keys(fields).length === 0 && !hasModel && !options.runtimeMode && !options.interactionMode) {
     throw new ConfigError("thread update requires a metadata or mode option.", "cli_parse_failed");
   }
-  if (Object.keys(fields).length > 0) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.meta.update", fields, true);
-  if (options.runtimeMode) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.runtime-mode.set", { runtimeMode: options.runtimeMode, createdAt: new Date().toISOString() }, true);
-  if (options.interactionMode) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.interaction-mode.set", { interactionMode: options.interactionMode, createdAt: new Date().toISOString() }, true);
+  if (Object.keys(fields).length > 0) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.metadata.update", fields, true);
+  if (hasModel) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.model-selection.set", { modelSelection: resolveModel(options) }, true);
+  if (options.runtimeMode) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.runtime-mode.set", { runtimeMode: options.runtimeMode }, true);
+  if (options.interactionMode) await dispatchThreadCommand({ ...options, sink: undefined }, "thread.interaction-mode.set", { interactionMode: options.interactionMode }, true);
   const result = { threadId: options.threadId, updated: true, fields };
   commandContext(options).sink.write(result);
   return result;
 }
 
 export async function respondToApproval(options: CommandContext & { readonly threadId: string; readonly requestId: string; readonly decision: string }): Promise<unknown> {
-  return dispatchThreadCommand(options, "thread.approval.respond", { requestId: options.requestId, decision: options.decision, createdAt: new Date().toISOString() });
+  return dispatchThreadCommand(options, "runtime-request.respond", { requestId: options.requestId, decision: options.decision });
 }
 
 export async function respondToUserInput(options: CommandContext & { readonly threadId: string; readonly requestId: string; readonly answers: Record<string, unknown> }): Promise<unknown> {
-  return dispatchThreadCommand(options, "thread.user-input.respond", { requestId: options.requestId, answers: options.answers, createdAt: new Date().toISOString() });
+  return dispatchThreadCommand(options, "runtime-request.respond", { requestId: options.requestId, answers: options.answers });
 }
 
 export async function interruptThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> {
-  return dispatchThreadCommand(options, "thread.turn.interrupt", { createdAt: new Date().toISOString() });
+  const { sink } = commandContext(options);
+  const projection: any = await withClient(options, (client) => Effect.gen(function* () {
+    return yield* client[ORCHESTRATION_V2_WS_METHODS.getThreadProjection]({ threadId: options.threadId }).pipe(
+      Effect.catch(() => Effect.succeed(null)),
+    );
+  }));
+  const run = activeRun(projection) ?? newestRun(projection);
+  if (!run?.id) throw new ConfigError(`Thread "${options.threadId}" has no run to interrupt.`, "command_failed");
+  await dispatchThreadCommand({ ...options, sink: undefined }, "run.interrupt", { runId: run.id }, true);
+  const result = { threadId: options.threadId, operation: "run.interrupt", accepted: true };
+  sink.write(result);
+  return result;
 }
 
 export function toCommandError(error: unknown): { readonly exitCode: number; readonly output: ReturnType<typeof structuredError> } {

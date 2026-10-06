@@ -124,3 +124,151 @@ test("CLI parses --fast-mode as boolean without consuming positionals", async ()
   assert.equal(startParsed.positionals[0], "my prompt");
 });
 
+test("worktree flags are accepted by thread create and start, and documented", async () => {
+  const { assertKnownFlags } = await import("../dist/index.js");
+  const worktreeFlags = ["worktree", "worktree-path", "base-branch", "branch", "from-origin"];
+  assert.doesNotThrow(() => assertKnownFlags(["thread", "start"], [...worktreeFlags, "project", "wait"]));
+  assert.doesNotThrow(() => assertKnownFlags(["thread", "create"], worktreeFlags));
+
+  const { commandHelp } = await import("../dist/commands.js");
+  for (const command of [["thread", "start"], ["thread", "create"]]) {
+    const help = commandHelp(command);
+    assert.match(help, /--worktree/, `${command.join(" ")} help should document --worktree`);
+    assert.match(help, /--worktree-path/, `${command.join(" ")} help should document --worktree-path`);
+    assert.match(help, /--base-branch/, `${command.join(" ")} help should document --base-branch`);
+  }
+  // Sibling commands must not gain the flags.
+  assert.throws(() => assertKnownFlags(["thread", "send"], ["worktree"]), /Unknown flag "--worktree"/);
+  assert.doesNotThrow(() => assertKnownFlags(["thread", "update"], ["worktree-path"]));
+});
+
+test("thread start parses --worktree as boolean and --worktree-path with a value", async () => {
+  const { parseArgs } = await import("../dist/index.js");
+  const fresh = parseArgs(["thread", "start", "--project", "proj-1", "--worktree", "fix the bug"]);
+  assert.equal(fresh.flags.get("worktree"), true);
+  assert.deepEqual(fresh.positionals, ["fix the bug"]);
+
+  const attached = parseArgs(["thread", "start", "--project", "proj-1", "--worktree-path", "/srv/repo/.t3/worktrees/feature-a", "fix the bug"]);
+  assert.equal(attached.flags.get("worktree-path"), "/srv/repo/.t3/worktrees/feature-a");
+  assert.deepEqual(attached.positionals, ["fix the bug"]);
+});
+
+test("CLI accepts schedule flags, rejects leaked ones, and documents the commands", async () => {
+  const { assertKnownFlags } = await import("../dist/index.js");
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "add"], ["thread", "message", "image", "at", "in", "retry-until", "retry-interval", "provider", "model", "runtime-mode"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "list"], ["all"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "cancel"], ["id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "run"], ["interval", "once"]));
+  // Aliased subcommands validate against the command they resolve to.
+  assert.doesNotThrow(() => assertKnownFlags(["schedule", "rm"], ["id"]));
+  // --wait makes no sense for a queued send; worktree flags belong to threads.
+  assert.throws(() => assertKnownFlags(["schedule", "add"], ["wait"]), /Unknown flag "--wait"/);
+  assert.throws(() => assertKnownFlags(["schedule", "add"], ["worktree"]), /Unknown flag "--worktree"/);
+  assert.throws(() => assertKnownFlags(["schedule", "run"], ["in"]), /Unknown flag "--in"/);
+});
+
+test("schedule help is scoped and the root is documented", async () => {
+  const { commandHelp, topLevelHelp } = await import("../dist/commands.js");
+  const addHelp = commandHelp(["schedule", "add"]);
+  assert.match(addHelp, /t3ctl schedule add —/);
+  assert.match(addHelp, /--retry-until/);
+  assert.match(addHelp, /--in/);
+  // Sibling schedule commands must not leak into add's help.
+  assert.doesNotMatch(addHelp, /--once/);
+  const runHelp = commandHelp(["schedule", "run"]);
+  assert.match(runHelp, /--once/);
+  assert.match(runHelp, /--interval/);
+  const top = topLevelHelp();
+  assert.match(top, /schedule add <thread-id>/);
+  assert.match(top, /schedule run/);
+  assert.match(top, /queue a resume/i);
+});
+
+test("impossible worktree flag combinations are rejected before any network traffic", async () => {
+  const { validateWorktreeSettings } = await import("../dist/app.js");
+  // Valid shapes pass untouched.
+  assert.doesNotThrow(() => validateWorktreeSettings({}));
+  assert.doesNotThrow(() => validateWorktreeSettings({ worktree: true }));
+  assert.doesNotThrow(() => validateWorktreeSettings({ worktree: true, baseBranch: "main", fromOrigin: true }));
+  assert.doesNotThrow(() => validateWorktreeSettings({ worktreePath: "/srv/wt", branch: "feature-a" }));
+
+  assert.throws(
+    () => validateWorktreeSettings({ worktree: true, worktreePath: "/srv/wt" }),
+    (error) => error.code === "cli_parse_failed" && /mutually exclusive/.test(error.message),
+  );
+  assert.throws(
+    () => validateWorktreeSettings({ baseBranch: "main" }),
+    (error) => error.code === "cli_parse_failed" && /--base-branch requires --worktree/.test(error.message),
+  );
+  assert.throws(
+    () => validateWorktreeSettings({ fromOrigin: true }),
+    (error) => error.code === "cli_parse_failed" && /--from-origin requires --worktree/.test(error.message),
+  );
+  assert.throws(
+    () => validateWorktreeSettings({ branch: "feature-a" }),
+    (error) => error.code === "cli_parse_failed" && /--branch requires --worktree or --worktree-path/.test(error.message),
+  );
+});
+
+test("thread send and schedule add parse positional messages when --thread is passed", async () => {
+  const { parseArgs } = await import("../dist/index.js");
+  const sendPositional = parseArgs(["thread", "send", "thr_123", "hello"]);
+  assert.equal(sendPositional.positionals[0], "thr_123");
+  assert.equal(sendPositional.positionals[1], "hello");
+
+  const sendFlag = parseArgs(["thread", "send", "--thread", "thr_123", "hello"]);
+  assert.equal(sendFlag.flags.get("thread"), "thr_123");
+  assert.equal(sendFlag.positionals[0], "hello");
+
+  const schedPositional = parseArgs(["schedule", "add", "thr_123", "continue", "--in", "5h"]);
+  assert.equal(schedPositional.positionals[0], "thr_123");
+  assert.equal(schedPositional.positionals[1], "continue");
+
+  const schedFlag = parseArgs(["schedule", "add", "--thread", "thr_123", "continue", "--in", "5h"]);
+  assert.equal(schedFlag.flags.get("thread"), "thr_123");
+  assert.equal(schedFlag.positionals[0], "continue");
+});
+test("ChatAttachment deserializes file, image, and unknown attachment variants", async () => {
+  const { Schema } = await import("effect");
+  const { ChatAttachment } = await import("@t3tools/contracts");
+
+  const decodeAttachment = Schema.decodeUnknownSync(ChatAttachment);
+
+  // 1. PDF file attachment
+  const pdfAttachment = decodeAttachment({
+    type: "file",
+    id: "att_pdf_1",
+    name: "architecture brief.pdf",
+    mimeType: "application/pdf",
+    sizeBytes: 1024,
+  });
+  assert.equal(pdfAttachment.type, "file");
+  assert.equal(pdfAttachment.name, "architecture brief.pdf");
+  assert.equal(pdfAttachment.mimeType, "application/pdf");
+
+  // 2. Unknown non-image/non-file variant keeps its shared base fields
+  const genericAttachment = decodeAttachment({
+    type: "document",
+    id: "att_doc_1",
+    name: "report.docx",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    sizeBytes: 2048,
+  });
+  assert.equal(genericAttachment.type, "document");
+  assert.equal(genericAttachment.name, "report.docx");
+
+  // 3. Image attachment
+  const imageAttachment = decodeAttachment({
+    type: "image",
+    id: "att_img_1",
+    name: "screenshot.png",
+    mimeType: "image/png",
+    sizeBytes: 4096,
+  });
+  assert.equal(imageAttachment.type, "image");
+
+  // 4. A malformed unknown variant missing its base fields is rejected outright.
+  assert.throws(() => decodeAttachment({ type: "unrecognised_missing_required_fields" }));
+});
+
+

@@ -160,6 +160,21 @@ function humanize(value: unknown, indent = 0): string {
       return `${header}\n${envLines}`;
     }
 
+    if ("schedules" in obj && Array.isArray(obj.schedules)) {
+      const schedules = obj.schedules as Array<Record<string, unknown>>;
+      if (schedules.length === 0) return `${pad}No scheduled sends.`;
+      return schedules.map((s) => {
+        const lines = [`${pad}• ${s.id} [${s.state}] → thread ${s.threadId}`];
+        if (s.environment || s.serverUrl) lines.push(`${pad}  Server: ${s.environment ?? s.serverUrl}`);
+        lines.push(`${pad}  Due: ${s.dueAt}`);
+        if (s.retryUntil) lines.push(`${pad}  Retries rate-limit failures until ${s.retryUntil}`);
+        if (s.lastError) lines.push(`${pad}  Last error: ${s.lastError}`);
+        const message = String(s.message ?? "");
+        lines.push(`${pad}  Message: ${message.length > 80 ? `${message.slice(0, 77)}...` : message}`);
+        return lines.join("\n");
+      }).join("\n\n");
+    }
+
     const entries = Object.entries(obj);
     if (entries.length === 0) return `${pad}{}`;
     return entries.map(([key, val]) => {
