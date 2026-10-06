@@ -19,18 +19,23 @@ import {
   listProjects,
   listThreads,
   lifecycleExitCode,
+  forkThread,
+  pinThread,
   respondToApproval,
   respondToUserInput,
+  searchThreads,
   sendMessage,
   setProviderCredential,
   settleThread,
   startThread,
   transcript,
   unarchiveThread,
+  unpinThread,
   unsettleThread,
   updateThread,
   updateProject,
   viewThread,
+  visitThread,
   waitForThread,
   watchThread,
   toCommandError,
@@ -45,7 +50,12 @@ import {
 } from "./commands.js";
 import { ConfigError } from "./config.js";
 import { outputFormatFromArgv, createOutputSink, type OutputFormat } from "./output.js";
+import { diffReview, diffThread, diffTurn } from "./diff.js";
+import { deviceAction, deviceClose, deviceConfigure, deviceDetail, deviceList, deviceOpen, deviceShutdown, deviceTestHost } from "./device.js";
+import { fileFind, fileList, fileRead, fileSearch, fileWrite } from "./files.js";
+import { prChecks, prComment, prDetail, prLinkedThreads, prList, prReview, prStack, prUpdate } from "./pullRequest.js";
 import { scheduleAdd, scheduleCancel, scheduleDeliveries, scheduleList, scheduleRotateWebhook, scheduleRunNow, scheduleSetEnabled, scheduleSubscribe } from "./schedule.js";
+import { sessionsImport, sessionsScan } from "./sessions.js";
 import { attachTerminal, closeTerminal, listTerminals } from "./terminal.js";
 import { consumeResetCredit, getUsage, listProviderLimits, refreshUsageRates } from "./usage.js";
 
@@ -438,6 +448,30 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       await respondToUserInput({ ...context, threadId, requestId: required(args, "request-id"), answers });
       return 0;
     }
+    if (subcommand === "search") {
+      await searchThreads({ ...context, query: flag(args, "query") || args.positionals[0] || "", limit: parseIntFlag(flag(args, "limit"), "limit") });
+      return 0;
+    }
+    if (subcommand === "fork") {
+      if (!threadId) throw new ConfigError("thread fork requires a thread ID.", "thread_missing");
+      await forkThread({ ...context, threadId, title: flag(args, "title"), targetThreadId: flag(args, "target-thread-id") });
+      return 0;
+    }
+    if (subcommand === "pin") {
+      if (!threadId) throw new ConfigError("thread pin requires a thread ID.", "thread_missing");
+      await pinThread({ ...context, threadId });
+      return 0;
+    }
+    if (subcommand === "unpin") {
+      if (!threadId) throw new ConfigError("thread unpin requires a thread ID.", "thread_missing");
+      await unpinThread({ ...context, threadId });
+      return 0;
+    }
+    if (subcommand === "visit") {
+      if (!threadId) throw new ConfigError("thread visit requires a thread ID.", "thread_missing");
+      await visitThread({ ...context, threadId });
+      return 0;
+    }
     throw new ConfigError("Unknown thread command.", "cli_parse_failed");
   }
   if (root === "terminal") {
@@ -543,6 +577,77 @@ async function runCommand(args: ParsedArgs, format: OutputFormat): Promise<numbe
       hourly: boolFlag(args, "hourly"),
     });
     return 0;
+  }
+  if (root === "file") {
+    const projectId = flag(args, "project") || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID;
+    const cwd = flag(args, "cwd");
+    if (subcommand === "list") { await fileList({ ...context, projectId, cwd, directory: flag(args, "directory") }); return 0; }
+    if (subcommand === "read") { await fileRead({ ...context, projectId, cwd, relativePath: required(args, "relative-path", args.positionals[0]) }); return 0; }
+    if (subcommand === "write") { await fileWrite({ ...context, projectId, cwd, relativePath: required(args, "relative-path", args.positionals[0]), contents: flag(args, "contents") }); return 0; }
+    if (subcommand === "search") { await fileSearch({ ...context, projectId, cwd, query: flag(args, "query") || args.positionals[0] || "", limit: flag(args, "limit"), caseSensitive: boolFlag(args, "case-sensitive"), wholeWord: boolFlag(args, "whole-word"), regex: boolFlag(args, "regex") }); return 0; }
+    if (subcommand === "find") { await fileFind({ ...context, projectId, cwd, query: args.positionals[0], limit: flag(args, "limit"), kind: flag(args, "kind") }); return 0; }
+    throw new ConfigError("Unknown file command. Use file list, read, write, search, or find.", "cli_parse_failed");
+  }
+  if (root === "sessions") {
+    if (subcommand === "scan" || !subcommand) { await sessionsScan(context); return 0; }
+    if (subcommand === "import") { await sessionsImport({ ...context, projectId: required(args, "project", args.positionals[0] || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID) }); return 0; }
+    throw new ConfigError("Unknown sessions command. Use sessions scan or sessions import.", "cli_parse_failed");
+  }
+  if (root === "diff") {
+    const threadId = flag(args, "thread") || flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID || args.positionals[0];
+    if (subcommand === "turn") {
+      if (!threadId) throw new ConfigError("diff turn requires a thread ID.", "thread_missing");
+      await diffTurn({ ...context, threadId, from: flag(args, "from"), to: flag(args, "to"), ignoreWhitespace: boolFlag(args, "ignore-whitespace") });
+      return 0;
+    }
+    if (subcommand === "thread") {
+      if (!threadId) throw new ConfigError("diff thread requires a thread ID.", "thread_missing");
+      await diffThread({ ...context, threadId, to: flag(args, "to"), ignoreWhitespace: boolFlag(args, "ignore-whitespace") });
+      return 0;
+    }
+    if (subcommand === "review") {
+      await diffReview({ ...context, projectId: flag(args, "project") || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID, cwd: flag(args, "cwd"), baseRef: flag(args, "base-ref"), ignoreWhitespace: boolFlag(args, "ignore-whitespace") });
+      return 0;
+    }
+    throw new ConfigError("Unknown diff command. Use diff turn, diff thread, or diff review.", "cli_parse_failed");
+  }
+  if (root === "device") {
+    if (subcommand === "list" || !subcommand) { await deviceList({ ...context, updateTool: flag(args, "update-tool"), inspectOnly: boolFlag(args, "inspect-only"), retryHostId: flag(args, "retry-host-id") }); return 0; }
+    if (subcommand === "open") {
+      await deviceOpen({ ...context, deviceId: required(args, "device-id", args.positionals[0]), threadId: required(args, "thread", flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID), platform: flag(args, "platform"), hostId: flag(args, "host-id"), boot: !boolFlag(args, "no-boot") });
+      return 0;
+    }
+    if (subcommand === "close") {
+      await deviceClose({ ...context, threadId: required(args, "thread", flag(args, "thread-id") || process.env.T3_THREAD_ID || process.env.T3CTL_THREAD_ID), deviceId: flag(args, "device-id") || args.positionals[0], hostId: flag(args, "host-id"), shutdown: boolFlag(args, "shutdown") });
+      return 0;
+    }
+    if (subcommand === "shutdown") { await deviceShutdown({ ...context, deviceId: required(args, "device-id", args.positionals[0]), platform: flag(args, "platform"), hostId: flag(args, "host-id") }); return 0; }
+    if (subcommand === "detail") { await deviceDetail({ ...context, deviceId: required(args, "device-id", args.positionals[0]), hostId: flag(args, "host-id") }); return 0; }
+    if (subcommand === "configure") {
+      await deviceConfigure({ ...context, enabled: boolFlag(args, "enable") ? true : boolFlag(args, "disable") ? false : undefined, agentAccessEnabled: boolFlag(args, "agent-access") ? true : boolFlag(args, "no-agent-access") ? false : undefined, onboardingCompleted: boolFlag(args, "onboarding-complete") ? true : undefined });
+      return 0;
+    }
+    if (subcommand === "test-host") { await deviceTestHost({ ...context, hostId: required(args, "host-id", args.positionals[0]), label: flag(args, "label"), target: flag(args, "target"), identityFile: flag(args, "identity-file"), port: flag(args, "port") }); return 0; }
+    if (subcommand === "action") { await deviceAction({ ...context, json: required(args, "json") }); return 0; }
+    throw new ConfigError("Unknown device command. Use device list, open, close, shutdown, detail, configure, test-host, or action.", "cli_parse_failed");
+  }
+  if (root === "pr") {
+    const prTarget = {
+      projectId: flag(args, "project") || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID,
+      repository: flag(args, "repository"),
+      number: flag(args, "number"),
+      host: flag(args, "host"),
+      reference: flag(args, "reference") || args.positionals[0],
+    };
+    if (subcommand === "list" || !subcommand) { await prList({ ...context, state: flag(args, "state"), involvement: flag(args, "involvement"), projectId: flag(args, "project") || process.env.T3_PROJECT_ID || process.env.T3CTL_PROJECT_ID, host: flag(args, "host"), limit: flag(args, "limit") }); return 0; }
+    if (subcommand === "detail") { await prDetail({ ...context, ...prTarget }); return 0; }
+    if (subcommand === "checks") { await prChecks({ ...context, ...prTarget }); return 0; }
+    if (subcommand === "stack") { await prStack({ ...context, ...prTarget }); return 0; }
+    if (subcommand === "threads") { await prLinkedThreads({ ...context, ...prTarget }); return 0; }
+    if (subcommand === "comment") { await prComment({ ...context, ...prTarget, body: required(args, "body") }); return 0; }
+    if (subcommand === "review") { await prReview({ ...context, ...prTarget, verdict: required(args, "verdict"), body: flag(args, "body") }); return 0; }
+    if (subcommand === "update") { await prUpdate({ ...context, ...prTarget, title: flag(args, "title"), body: flag(args, "body") }); return 0; }
+    throw new ConfigError("Unknown pr command. Use pr list, detail, checks, stack, threads, comment, review, or update.", "cli_parse_failed");
   }
   if (root === "connect") {
     // Clean-break alias retained as a discoverable migration path.

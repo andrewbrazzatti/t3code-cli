@@ -98,6 +98,21 @@ const SCHEDULE_ID_FLAG: readonly FlagSpec[] = [
   { name: "id", arg: "ID", description: "Scheduled task ID (may also be given positionally)" },
 ];
 
+/** Selects a workspace for file and diff commands. */
+const FILE_TARGET_FLAGS: readonly FlagSpec[] = [
+  { name: "project", arg: "ID", description: "Project whose workspace root to use" },
+  { name: "cwd", arg: "PATH", description: "Absolute directory to use (overrides --project)" },
+];
+
+/** Identifies one pull request. */
+const PR_TARGET_FLAGS: readonly FlagSpec[] = [
+  { name: "project", arg: "ID", description: "Project the repository belongs to (required)" },
+  { name: "repository", arg: "OWNER/NAME", description: "Repository (owner/name)" },
+  { name: "number", arg: "N", description: "Pull request number" },
+  { name: "host", arg: "HOST", description: "Git host, e.g. github.com" },
+  { name: "reference", arg: "REF", description: "owner/name#N or a pull-request URL (may also be positional)" },
+];
+
 /**
  * Keyed by `"<root> <subcommand>"`, or just `"<root>"` for commands without
  * subcommands. Aliases share a spec so `project rename` validates like
@@ -325,6 +340,26 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
       { name: "answers", arg: "JSON", description: "JSON object of answers (required)" },
     ],
   },
+  "thread search": {
+    usage: "<query>",
+    summary: "Search thread history for a query",
+    flags: [
+      { name: "query", arg: "TEXT", description: "Search text, at least 2 characters (may also be positional)" },
+      { name: "limit", arg: "N", description: "Maximum matches to return (1-50)" },
+    ],
+  },
+  "thread fork": {
+    usage: "<thread-id>",
+    summary: "Fork a thread from its latest stable point",
+    flags: [
+      ...THREAD_ID_FLAGS,
+      { name: "title", arg: "TITLE", description: "Title for the forked thread" },
+      { name: "target-thread-id", arg: "ID", description: "Explicit id for the fork (default: generated)" },
+    ],
+  },
+  "thread pin": { usage: "<thread-id>", summary: "Pin a thread to the top of the list", flags: [...THREAD_ID_FLAGS] },
+  "thread unpin": { usage: "<thread-id>", summary: "Unpin a thread", flags: [...THREAD_ID_FLAGS] },
+  "thread visit": { usage: "<thread-id>", summary: "Mark a thread as read up to now", flags: [...THREAD_ID_FLAGS] },
 
   "schedule add": {
     usage: "[prompt]",
@@ -391,6 +426,174 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     ],
   },
 
+  "file list": {
+    usage: "[--project ID | --cwd PATH]",
+    summary: "List files in a project's workspace root (or one directory of it)",
+    flags: [...FILE_TARGET_FLAGS, { name: "directory", arg: "PATH", description: "List one directory's immediate children" }],
+  },
+  "file read": {
+    usage: "<relative-path>",
+    summary: "Read a workspace file",
+    flags: [...FILE_TARGET_FLAGS, { name: "relative-path", arg: "PATH", description: "Workspace-relative path (may also be positional)" }],
+  },
+  "file write": {
+    usage: "<relative-path>",
+    summary: "Write a workspace file (contents from --contents or stdin)",
+    flags: [
+      ...FILE_TARGET_FLAGS,
+      { name: "relative-path", arg: "PATH", description: "Workspace-relative path (may also be positional)" },
+      { name: "contents", arg: "TEXT", description: "File contents; read from stdin when omitted" },
+    ],
+  },
+  "file search": {
+    usage: "<query>",
+    summary: "Search file contents in a project's workspace",
+    flags: [
+      ...FILE_TARGET_FLAGS,
+      { name: "query", arg: "TEXT", description: "Search text (may also be positional)" },
+      { name: "limit", arg: "N", description: "Maximum matches (default 100)" },
+      { name: "case-sensitive", description: "Match case" },
+      { name: "whole-word", description: "Match whole words only" },
+      { name: "regex", description: "Treat the query as a regular expression" },
+    ],
+  },
+  "file find": {
+    usage: "[query]",
+    summary: "Find files by name/path in a project's workspace",
+    flags: [...FILE_TARGET_FLAGS, { name: "limit", arg: "N", description: "Maximum results (default 100)" }, { name: "kind", arg: "file|directory", description: "Restrict to files or directories" }],
+  },
+
+  "sessions scan": { summary: "List directories the Claude Code and Codex CLIs have run in", flags: [] },
+  "sessions import": {
+    usage: "<project-id>",
+    summary: "Import native session history for a project",
+    flags: [{ name: "project", arg: "ID", description: "Project to import history into (may also be positional)" }],
+  },
+
+  "diff turn": {
+    usage: "<thread-id>",
+    summary: "Show a thread's diff between two turn counts",
+    flags: [
+      ...THREAD_ID_FLAGS,
+      { name: "from", arg: "N", description: "First turn count (required)" },
+      { name: "to", arg: "N", description: "Last turn count (required)" },
+      { name: "ignore-whitespace", description: "Ignore whitespace changes" },
+    ],
+  },
+  "diff thread": {
+    usage: "<thread-id>",
+    summary: "Show a thread's full-history diff up to a turn count",
+    flags: [
+      ...THREAD_ID_FLAGS,
+      { name: "to", arg: "N", description: "Turn count to diff up to (required)" },
+      { name: "ignore-whitespace", description: "Ignore whitespace changes" },
+    ],
+  },
+  "diff review": {
+    usage: "[--project ID | --cwd PATH]",
+    summary: "Show the working-tree or branch-range diff for a checkout",
+    flags: [...FILE_TARGET_FLAGS, { name: "base-ref", arg: "REF", description: "Base ref for a branch-range diff" }, { name: "ignore-whitespace", description: "Ignore whitespace changes" }],
+  },
+
+  "device list": {
+    summary: "List simulators, emulators, and device hosts",
+    flags: [
+      { name: "update-tool", arg: "hub|agent", description: "Install the pinned device tool" },
+      { name: "inspect-only", description: "Read inventory without installing tools or starting helpers" },
+      { name: "retry-host-id", arg: "ID", description: "Retry one host only" },
+    ],
+  },
+  "device open": {
+    usage: "<device-id>",
+    summary: "Open a simulator/emulator and attach it to a thread",
+    flags: [
+      { name: "device-id", arg: "ID", description: "Device ID (may also be positional)" },
+      ...THREAD_ID_FLAGS,
+      { name: "platform", arg: "ios|android", description: "Device platform (required)" },
+      { name: "host-id", arg: "ID", description: "Device host ID (default: local)" },
+      { name: "no-boot", description: "Do not boot the device if it is not running" },
+    ],
+  },
+  "device close": {
+    usage: "[device-id]",
+    summary: "Close a thread's device session",
+    flags: [
+      ...THREAD_ID_FLAGS,
+      { name: "device-id", arg: "ID", description: "Device ID (default: close all for the thread)" },
+      { name: "host-id", arg: "ID", description: "Device host ID" },
+      { name: "shutdown", description: "Also shut the simulator/emulator down" },
+    ],
+  },
+  "device shutdown": {
+    usage: "<device-id>",
+    summary: "Shut down a simulator or emulator",
+    flags: [
+      { name: "device-id", arg: "ID", description: "Device ID (may also be positional)" },
+      { name: "platform", arg: "ios|android", description: "Device platform (required)" },
+      { name: "host-id", arg: "ID", description: "Device host ID" },
+    ],
+  },
+  "device detail": {
+    usage: "<device-id>",
+    summary: "Show a device's settings and foreground app",
+    flags: [{ name: "device-id", arg: "ID", description: "Device ID (may also be positional)" }, { name: "host-id", arg: "ID", description: "Device host ID" }],
+  },
+  "device configure": {
+    summary: "Enable or disable the device panel",
+    flags: [
+      { name: "enable", description: "Enable device access" },
+      { name: "disable", description: "Disable device access" },
+      { name: "agent-access", description: "Allow the agent to drive devices" },
+      { name: "no-agent-access", description: "Disallow agent device access" },
+      { name: "onboarding-complete", description: "Mark device onboarding complete" },
+    ],
+  },
+  "device test-host": {
+    usage: "<host-id>",
+    summary: "Test an SSH device host connection",
+    flags: [
+      { name: "host-id", arg: "ID", description: "Host ID (may also be positional)" },
+      { name: "label", arg: "LABEL", description: "Human-readable host label" },
+      { name: "target", arg: "USER@HOST", description: "SSH target (required)" },
+      { name: "identity-file", arg: "PATH", description: "SSH identity file" },
+      { name: "port", arg: "N", description: "SSH port" },
+    ],
+  },
+  "device action": {
+    summary: "Send a raw device action (JSON)",
+    flags: [{ name: "json", arg: "JSON", description: "DeviceActionInput JSON object (required)" }],
+  },
+
+  "pr list": {
+    summary: "List pull requests across projects",
+    flags: [
+      { name: "state", arg: "all|open|closed|merged", description: "Filter by state (default: open)" },
+      { name: "involvement", arg: "all|reviewing|authored", description: "Filter by your involvement" },
+      { name: "project", arg: "ID", description: "Limit to one project" },
+      { name: "host", arg: "HOST", description: "Limit to one git host" },
+      { name: "limit", arg: "N", description: "Rows per repository (1-500)" },
+    ],
+  },
+  "pr detail": { usage: "[reference]", summary: "Show a pull request", flags: [...PR_TARGET_FLAGS] },
+  "pr checks": { usage: "[reference]", summary: "Show a pull request's CI checks", flags: [...PR_TARGET_FLAGS] },
+  "pr stack": { usage: "[reference]", summary: "Show the stack a pull request belongs to", flags: [...PR_TARGET_FLAGS] },
+  "pr threads": { usage: "[reference]", summary: "List threads linked to a pull request", flags: [...PR_TARGET_FLAGS] },
+  "pr comment": {
+    usage: "[reference]",
+    summary: "Post a comment on a pull request",
+    flags: [...PR_TARGET_FLAGS, { name: "body", arg: "TEXT", description: "Comment body (required)" }],
+  },
+  "pr review": {
+    usage: "[reference]",
+    summary: "Submit a review on a pull request",
+    flags: [...PR_TARGET_FLAGS, { name: "verdict", arg: "comment|approve|request-changes", description: "Review verdict (required)" }, { name: "body", arg: "TEXT", description: "Review body" }],
+  },
+  "pr update": {
+    usage: "[reference]",
+    summary: "Update a pull request's title or body",
+    flags: [...PR_TARGET_FLAGS, { name: "title", arg: "TITLE", description: "New title" }, { name: "body", arg: "TEXT", description: "New body" }],
+  },
+
   "connect": {
     usage: "<pairing-url>",
     summary: "Alias of `auth pair`, kept as a migration path",
@@ -434,7 +637,7 @@ const ALIASES: Readonly<Record<string, string>> = {
 };
 
 /** Roots whose second token is a subcommand rather than a positional. */
-export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal", "schedule", "usage"]);
+export const ROOTS_WITH_SUBCOMMANDS: ReadonlySet<string> = new Set(["auth", "env", "project", "thread", "provider", "terminal", "schedule", "usage", "file", "sessions", "diff", "device", "pr"]);
 
 export function commandKey(command: readonly string[]): string {
   const raw = command.join(" ");
@@ -535,6 +738,24 @@ Scheduled tasks (server-side; no local runner):
 Usage and cost:
   usage [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--timezone TZ] [--hourly]
   usage refresh-rates
+
+Files and diffs:
+  file list|read|write|search|find [--project ID | --cwd PATH]
+  diff turn <thread-id> --from N --to N | diff thread <thread-id> --to N
+  diff review [--project ID | --cwd PATH] [--base-ref REF]
+
+Devices (simulators/emulators):
+  device list [--inspect-only]
+  device open <device-id> --thread <id> --platform ios|android
+  device close|shutdown|detail|configure|test-host|action
+
+Agent session import:
+  sessions scan
+  sessions import <project-id>
+
+Pull requests:
+  pr list [--state open|closed|merged|all] [--involvement authored|reviewing|all]
+  pr detail|checks|stack|threads|comment|review|update [owner/name#N] --project ID
 
 Automation:
   Prompts may be positional, passed with --message/--prompt, or read from stdin.

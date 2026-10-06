@@ -1006,6 +1006,44 @@ export async function unarchiveThread(options: CommandContext & { readonly threa
 export async function deleteThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.delete"); }
 export async function settleThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.settle"); }
 export async function unsettleThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.unsettle"); }
+export async function pinThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.pin", {}); }
+export async function unpinThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.unpin", {}); }
+export async function visitThread(options: CommandContext & { readonly threadId: string }): Promise<unknown> { return dispatchThreadCommand(options, "thread.visit", { visitedAt: new Date().toISOString() }); }
+
+export async function searchThreads(options: CommandContext & { readonly query: string; readonly limit?: number }): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const query = options.query?.trim() ?? "";
+  if (query.length < 2) throw new ConfigError("thread search requires a query of at least 2 characters.", "cli_parse_failed");
+  const result = await withClient(options, (client) => Effect.gen(function* () {
+    return yield* client[ORCHESTRATION_V2_WS_METHODS.searchThreads]({
+      query,
+      ...(options.limit ? { limit: options.limit } : {}),
+    });
+  }));
+  sink.write(result);
+  return result;
+}
+
+export async function forkThread(options: CommandContext & {
+  readonly threadId: string;
+  readonly title?: string;
+  readonly targetThreadId?: string;
+}): Promise<unknown> {
+  const { sink } = commandContext(options);
+  const targetThreadId = options.targetThreadId || generateId("thread");
+  await withClient(options, (client) => Effect.gen(function* () {
+    yield* client[ORCHESTRATION_V2_WS_METHODS.dispatchCommand](command("thread.fork", {
+      ...CREATION,
+      sourceThreadId: options.threadId,
+      targetThreadId,
+      sourcePoint: { type: "latest_stable" },
+      ...(options.title ? { title: options.title } : {}),
+    }));
+  }));
+  const result = { sourceThreadId: options.threadId, threadId: targetThreadId, forked: true };
+  sink.write(result);
+  return result;
+}
 
 export async function updateThread(options: CommandContext & { readonly threadId: string; readonly title?: string; readonly provider?: string; readonly model?: string; readonly options?: ReadonlyArray<{ readonly id: string; readonly value: string | boolean }>; readonly branch?: string; readonly worktreePath?: string; readonly runtimeMode?: string; readonly interactionMode?: string }): Promise<unknown> {
   const fields: Record<string, unknown> = {};

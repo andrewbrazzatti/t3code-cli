@@ -76,9 +76,15 @@ provider limits | reset-credit
 project list | add | clone | update | delete
 thread list | create | start | send | wait | watch | view | transcript
 thread archive | unarchive | delete | update | interrupt | settle | unsettle | respond | respond-input
+thread search | fork | pin | unpin | visit
 terminal attach | list | close
 schedule add | list | enable | disable | cancel | run | deliveries | rotate-webhook | subscribe
 usage [--since D --until D] | refresh-rates
+file list | read | write | search | find
+diff turn | thread | review
+device list | open | close | shutdown | detail | configure | test-host | action
+sessions scan | import
+pr list | detail | checks | stack | threads | comment | review | update
 ```
 
 Thread creation and updates support `--provider`, `--model`, `--runtime-mode`, `--interaction-mode`, and provider options such as `--option effort=max` or `--effort high`. Project and thread selectors accept IDs, titles, and workspace-root names where applicable.
@@ -116,6 +122,33 @@ t3ctl usage --since 2026-09-01 --until 2026-09-30 --hourly
 t3ctl provider limits            # subscription windows and reset times
 t3ctl provider reset-credit codex_personal
 ```
+
+## Files, diffs, and search
+
+```sh
+t3ctl file list --project my-project
+t3ctl file read --project my-project src/index.ts
+t3ctl file search --project my-project "TODO" --regex
+t3ctl file write --project my-project notes.md --contents "hello"
+t3ctl diff review --project my-project [--base-ref main]
+t3ctl diff turn <thread-id> --from 1 --to 3
+t3ctl thread search "flaky test" --limit 10
+```
+
+`file` and `diff review` operate on a project's workspace (`--project`) or an explicit `--cwd`.
+
+## Devices, sessions, and pull requests
+
+```sh
+t3ctl device list --inspect-only
+t3ctl device open <device-id> --thread <id> --platform ios
+t3ctl sessions scan
+t3ctl sessions import my-project
+t3ctl pr list --state open --involvement authored
+t3ctl pr detail pingdotgg/t3code#123 --project my-project
+```
+
+Device commands drive iOS simulators and Android emulators on this host or on SSH device hosts, scoped to a thread. `sessions` imports existing Claude Code / Codex history. `pr` lists and acts on GitHub/Bitbucket change requests; identify one with `owner/name#N` or `--repository`/`--number`.
 
 ## Verification
 

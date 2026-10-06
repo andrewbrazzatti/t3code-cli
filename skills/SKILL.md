@@ -341,6 +341,75 @@ reset credit via `provider.consumeResetCredit`.
 
 ---
 
+## Files and Diffs (`file`, `diff`)
+
+`file` and `diff review` operate on a project's workspace (`--project`) or an
+explicit absolute `--cwd`.
+
+```sh
+t3ctl file list --project my-project
+t3ctl file list --project my-project --directory src
+t3ctl file read --project my-project src/index.ts
+t3ctl file write --project my-project notes.md --contents "hello"   # or pipe stdin
+t3ctl file search --project my-project "TODO" --regex --limit 50
+t3ctl file find --project my-project --kind file --limit 50
+t3ctl diff review --project my-project [--base-ref main] [--ignore-whitespace]
+t3ctl diff turn <thread-id> --from 1 --to 3
+t3ctl diff thread <thread-id> --to 5
+```
+
+`file write` contents come from `--contents` or stdin. `diff review` returns the
+working-tree and branch-range sources with per-file stats; `diff turn`/`diff
+thread` return a thread's checkpoint diff.
+
+## Thread Search and Organization (`thread`)
+
+```sh
+t3ctl thread search "flaky test" --limit 10   # searches user + assistant history
+t3ctl thread fork <thread-id> [--title "Fork"] # fork from the latest stable point
+t3ctl thread pin <thread-id> | thread unpin <thread-id>
+t3ctl thread visit <thread-id>                 # mark read up to now
+```
+
+## Devices (`device`)
+
+Drives iOS simulators and Android emulators on this host or on SSH device
+hosts. Devices are thread-scoped: `open` attaches one to a thread.
+
+```sh
+t3ctl device list [--inspect-only]
+t3ctl device open <device-id> --thread <id> --platform ios [--host-id H] [--no-boot]
+t3ctl device detail <device-id> [--host-id H]
+t3ctl device close <device-id> --thread <id> [--shutdown]
+t3ctl device shutdown <device-id> --platform android
+t3ctl device configure --enable --agent-access
+t3ctl device test-host <host-id> --target user@host [--port 22]
+t3ctl device action --json '{"deviceId":"...","type":"setAppearance","value":"dark"}'
+```
+
+## Import Agent Sessions (`sessions`)
+
+```sh
+t3ctl sessions scan              # directories the Claude Code / Codex CLIs ran in
+t3ctl sessions import my-project # fold native history into the thread list
+```
+
+## Pull Requests (`pr`)
+
+Identify a pull request with `owner/name#N`, a PR URL, or
+`--repository owner/name --number N`; `--project` is required.
+
+```sh
+t3ctl pr list [--state open|closed|merged|all] [--involvement authored|reviewing|all] [--limit N]
+t3ctl pr detail pingdotgg/t3code#123 --project my-project
+t3ctl pr checks|stack|threads <ref> --project my-project
+t3ctl pr comment <ref> --project my-project --body "Nice work"
+t3ctl pr review  <ref> --project my-project --verdict approve --body "LGTM"
+t3ctl pr update  <ref> --project my-project --title "New title"
+```
+
+---
+
 ## Automation Examples
 
 ### Shell Script Example

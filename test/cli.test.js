@@ -240,6 +240,31 @@ test("thread send and schedule add parse positional messages when --thread is pa
   assert.equal(schedFlag.flags.get("thread"), "thr_123");
   assert.equal(schedFlag.positionals[0], "continue");
 });
+test("phase-3 command families accept their flags and are documented", async () => {
+  const { assertKnownFlags } = await import("../dist/index.js");
+  assert.doesNotThrow(() => assertKnownFlags(["thread", "search"], ["query", "limit"]));
+  assert.doesNotThrow(() => assertKnownFlags(["thread", "fork"], ["thread", "title", "target-thread-id"]));
+  assert.doesNotThrow(() => assertKnownFlags(["thread", "pin"], ["thread"]));
+  assert.doesNotThrow(() => assertKnownFlags(["file", "search"], ["project", "cwd", "query", "limit", "case-sensitive", "whole-word", "regex"]));
+  assert.doesNotThrow(() => assertKnownFlags(["file", "read"], ["project", "cwd", "relative-path"]));
+  assert.doesNotThrow(() => assertKnownFlags(["sessions", "import"], ["project"]));
+  assert.doesNotThrow(() => assertKnownFlags(["diff", "turn"], ["thread", "from", "to", "ignore-whitespace"]));
+  assert.doesNotThrow(() => assertKnownFlags(["diff", "review"], ["project", "cwd", "base-ref", "ignore-whitespace"]));
+  assert.doesNotThrow(() => assertKnownFlags(["device", "open"], ["device-id", "thread", "platform", "host-id", "no-boot"]));
+  assert.doesNotThrow(() => assertKnownFlags(["device", "test-host"], ["host-id", "label", "target", "identity-file", "port"]));
+  assert.doesNotThrow(() => assertKnownFlags(["pr", "comment"], ["project", "repository", "number", "host", "reference", "body"]));
+  assert.doesNotThrow(() => assertKnownFlags(["pr", "review"], ["verdict", "body"]));
+  // Flags that belong to a sibling do not leak in.
+  assert.throws(() => assertKnownFlags(["device", "open"], ["boot"]), /Unknown flag "--boot"/);
+  assert.throws(() => assertKnownFlags(["file", "search"], ["relative-path"]), /Unknown flag "--relative-path"/);
+
+  const { commandHelp } = await import("../dist/commands.js");
+  assert.match(commandHelp(["pr", "list"]), /t3ctl pr list —/);
+  assert.match(commandHelp(["device", "open"]), /--platform/);
+  assert.match(commandHelp(["file", "search"]), /--regex/);
+  assert.match(commandHelp(["diff", "review"]), /--base-ref/);
+});
+
 test("ChatAttachment deserializes file, image, and unknown attachment variants", async () => {
   const { Schema } = await import("effect");
   const { ChatAttachment } = await import("@t3tools/contracts");
