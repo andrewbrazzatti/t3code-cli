@@ -329,4 +329,28 @@ test("ChatAttachment deserializes file, image, and unknown attachment variants",
   assert.throws(() => decodeAttachment({ type: "unrecognised_missing_required_fields" }));
 });
 
+test("thread respond accepts contract decisions and maps the approve/deny aliases", async () => {
+  const { normalizeApprovalDecision } = await import("../dist/app.js");
+  // Friendly aliases map onto the server contract.
+  assert.equal(normalizeApprovalDecision("approve"), "accept");
+  assert.equal(normalizeApprovalDecision("deny"), "decline");
+  // Contract values pass through unchanged.
+  for (const decision of ["accept", "acceptForSession", "acceptAlways", "decline", "cancel"]) {
+    assert.equal(normalizeApprovalDecision(decision), decision);
+  }
+  // Anything else is a parse failure, never forwarded to the server.
+  assert.throws(
+    () => normalizeApprovalDecision("yes"),
+    (error) => error.code === "cli_parse_failed" && /Unsupported --decision "yes"/.test(error.message),
+  );
+});
+
+test("thread respond help documents the contract decisions", async () => {
+  const { commandHelp } = await import("../dist/commands.js");
+  const help = commandHelp(["thread", "respond"]);
+  assert.match(help, /--decision/);
+  assert.match(help, /acceptForSession/);
+  assert.match(help, /approve\/deny map to accept\/decline/);
+});
+
 

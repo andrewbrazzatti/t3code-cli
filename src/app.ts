@@ -1,4 +1,4 @@
-import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
+import { ORCHESTRATION_V2_WS_METHODS, WS_METHODS, type ProviderApprovalDecision } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import * as crypto from "node:crypto";
@@ -1076,8 +1076,20 @@ export async function updateThread(options: CommandContext & { readonly threadId
   return result;
 }
 
+export const APPROVAL_DECISIONS = ["accept", "acceptForSession", "acceptAlways", "decline", "cancel"] as const satisfies ReadonlyArray<ProviderApprovalDecision>;
+
+export function normalizeApprovalDecision(decision: string): ProviderApprovalDecision {
+  if (decision === "approve") return "accept";
+  if (decision === "deny") return "decline";
+  if ((APPROVAL_DECISIONS as ReadonlyArray<string>).includes(decision)) return decision as ProviderApprovalDecision;
+  throw new ConfigError(
+    `Unsupported --decision "${decision}". Use approve, deny, or one of: ${APPROVAL_DECISIONS.join(", ")}.`,
+    "cli_parse_failed",
+  );
+}
+
 export async function respondToApproval(options: CommandContext & { readonly threadId: string; readonly requestId: string; readonly decision: string }): Promise<unknown> {
-  return dispatchThreadCommand(options, "runtime-request.respond", { requestId: options.requestId, decision: options.decision });
+  return dispatchThreadCommand(options, "runtime-request.respond", { requestId: options.requestId, decision: normalizeApprovalDecision(options.decision) });
 }
 
 export async function respondToUserInput(options: CommandContext & { readonly threadId: string; readonly requestId: string; readonly answers: Record<string, unknown> }): Promise<unknown> {

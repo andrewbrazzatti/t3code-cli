@@ -357,7 +357,7 @@ export const COMMANDS: Readonly<Record<string, CommandSpec>> = {
     flags: [
       ...THREAD_ID_FLAGS,
       { name: "request-id", arg: "ID", description: "Approval request ID (required)" },
-      { name: "decision", arg: "approve|deny", description: "Decision (required)" },
+      { name: "decision", arg: "approve|deny|accept|acceptForSession|acceptAlways|decline|cancel", description: "Decision (required); approve/deny map to accept/decline" },
     ],
   },
   "thread respond-input": {
